@@ -16,7 +16,7 @@
 
 无需复杂的配置，使用 SSH 连接服务器（需要 Root 权限）后执行以下命令：
 
-curl -O https://cdn.jsdelivr.net/gh/lje02/wp-manager@main/manager.sh && chmod +x manager.sh && bash manager.sh
+curl -O https://cdn.jsdelivr.net/gh/lje02/wp-manager@main/wp-manager.sh && chmod +x wp-manager.sh && bash wp-manager.sh
 
 🛠️ 常用功能
 脚本安装后，会自动注册快捷指令。以后只需输入 wp 即可打开菜单。
