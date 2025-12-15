@@ -16,6 +16,15 @@
 
 无需复杂的配置，使用 SSH 连接服务器（需要 Root 权限）后执行以下命令：
 
-```bash
-curl -O [https://cdn.jsdelivr.net/gh/lje02/wp-manager@main/manager.sh](https://cdn.jsdelivr.net/gh/lje02/wp-manager@main/manager.sh) && chmod +x manager.sh && bash manager.sh
+curl -O https://cdn.jsdelivr.net/gh/lje02/wp-manager@main/manager.sh && chmod +x manager.sh && bash manager.sh
 
+🛠️ 常用功能
+脚本安装后，会自动注册快捷指令。以后只需输入 wp 即可打开菜单。
+• 初始化网关：首次使用必须执行，建立 Nginx 流量入口。
+• 创建新站：自动配置数据库、Redis 和 Nginx 规则。
+• 修复反代：如果反向代理的图片加载失败，可用此功能修复。
+• 备份/还原：在迁移服务器或进行重大修改前，建议先备份。
+📋 环境要求
+• 系统：Ubuntu / Debian / CentOS / Alpine (推荐 Debian/Ubuntu)
+• 架构：x86_64 / amd64 / arm64
+• 权限：Root 用户
