@@ -1,4 +1,4 @@
-# 🐳 WordPress Docker 集群一键管家 (V49)
+# 🐳 WordPress Docker 集群一键管家 
 
 这是一个专为 VPS 设计的轻量级运维脚本，旨在帮助用户通过 Docker 快速构建、管理和保护 WordPress 站点。
 
