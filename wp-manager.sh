@@ -2,7 +2,7 @@
 
 # ================= 配置区域 =================
 # 脚本版本号
-VERSION="V56 (Firewall-Polished)"
+VERSION="V57 (ACL-Restored)"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
@@ -23,6 +23,8 @@ NC='\033[0m'
 
 # 初始化目录
 mkdir -p "$SITES_DIR" "$GATEWAY_DIR" "$FW_DIR"
+# 初始化 Nginx 规则文件 (防止挂载报错)
+touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf"
 
 # ================= 核心工具函数 =================
 
@@ -41,7 +43,6 @@ function check_and_install_docker() {
     fi
 }
 
-# --- 防火墙自动检测与安装 ---
 function ensure_firewall_installed() {
     if command -v ufw >/dev/null || command -v firewall-cmd >/dev/null; then return 0; fi
     echo -e "${YELLOW}>>> 正在安装防火墙...${NC}"
@@ -74,29 +75,24 @@ function update_script() {
     else echo -e "${RED}❌ 更新失败${NC}"; rm -f "$temp_file"; fi; read -p "..."
 }
 
-# ================= 安全防御中心 =================
+# ================= 安全防御中心 (V57) =================
 
-# --- 1. Fail2Ban 管理 ---
+# --- 1. Fail2Ban ---
 function fail2ban_manager() {
     while true; do
         clear; echo -e "${YELLOW}=== 👮 Fail2Ban SSH 防护专家 ===${NC}"
-        if systemctl is-active fail2ban >/dev/null 2>&1; then 
-            f2b_status="${GREEN}运行中${NC}"; banned_count=$(fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $4}')
-        else 
-            f2b_status="${RED}未运行${NC}"; banned_count="N/A"
-        fi
-        echo -e "状态: $f2b_status | 当前封禁IP数: ${RED}$banned_count${NC}"
+        if systemctl is-active fail2ban >/dev/null 2>&1; then f2b_status="${GREEN}运行中${NC}"; else f2b_status="${RED}未运行${NC}"; fi
+        echo -e "状态: $f2b_status"
         echo "--------------------------"
-        echo " 1. 安装并配置 (加强版策略)"
-        echo " 2. 查看被封禁 IP 列表"
-        echo " 3. 手动解封 IP"
-        echo " 4. 卸载/停止 Fail2Ban"
+        echo " 1. 安装并配置 (5次失败封禁24小时)"
+        echo " 2. 查看被封禁 IP"
+        echo " 3. 解封 IP"
         echo " 0. 返回"
         read -p "选择: " op
         case $op in
             0) return;;
             1) 
-                echo -e "${BLUE}>>> 正在安装 Fail2Ban...${NC}"
+                echo -e "${BLUE}>>> 安装中...${NC}"
                 if [ -f /etc/debian_version ]; then apt-get update && apt-get install -y fail2ban; logpath="/var/log/auth.log";
                 elif [ -f /etc/redhat-release ]; then yum install -y epel-release && yum install -y fail2ban; logpath="/var/log/secure"; fi
                 cat > /etc/fail2ban/jail.local <<EOF
@@ -111,27 +107,25 @@ port    = ssh
 logpath = $logpath
 backend = systemd
 EOF
-                systemctl enable fail2ban; systemctl restart fail2ban
-                echo -e "${GREEN}✔ 配置成功! (5次失败封禁24小时)${NC}"; read -p "按回车返回...";;
-            2) fail2ban-client status sshd 2>/dev/null | grep "Banned IP list"; read -p "按回车返回...";;
-            3) read -p "输入 IP: " uip; fail2ban-client set sshd unbanip $uip; echo "已解封"; read -p "...";;
-            4) systemctl stop fail2ban; systemctl disable fail2ban; echo "已停止"; read -p "...";;
+                systemctl enable fail2ban; systemctl restart fail2ban; echo -e "${GREEN}✔ 成功${NC}"; read -p "...";;
+            2) fail2ban-client status sshd 2>/dev/null | grep "Banned"; read -p "...";;
+            3) read -p "IP: " uip; fail2ban-client set sshd unbanip $uip; echo "OK"; read -p "...";;
         esac
     done
 }
 
-# --- 2. 全局 WAF 管理 ---
+# --- 2. WAF ---
 function waf_manager() {
     while true; do
         clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 ===${NC}"
-        echo " 1. 部署/更新 WAF 规则到所有网站 (强制)"
-        echo " 2. 查看当前 WAF 规则内容"
+        echo " 1. 分发增强规则到所有网站"
+        echo " 2. 查看规则预览"
         echo " 0. 返回"
         read -p "选择: " op
         case $op in
             0) return;;
             1)
-                echo -e "${BLUE}>>> 分发增强型 WAF 规则...${NC}"
+                echo -e "${BLUE}>>> 部署中...${NC}"
                 cat > /tmp/waf_strict.conf <<EOF
 location ~* /\.(git|svn|hg|env|bak|config|sql|db|key|pem) { deny all; return 403; }
 location ~* \.(sql|bak|conf|ini|log|sh|yaml|yml|swp)$ { deny all; return 403; }
@@ -141,126 +135,120 @@ if (\$query_string ~* "base64_decode\(") { return 403; }
 if (\$query_string ~* "eval\(") { return 403; }
 if (\$http_user_agent ~* (netcralwer|nikto|wikto|sf|sqlmap|bsqlbf|w3af|acunetix|havij|appscan)) { return 403; }
 EOF
-                count=0
                 for d in "$SITES_DIR"/*; do
-                    if [ -d "$d" ]; then cp /tmp/waf_strict.conf "$d/waf.conf"; cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1; ((count++)); fi
+                    if [ -d "$d" ]; then cp /tmp/waf_strict.conf "$d/waf.conf"; cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1; fi
                 done
-                rm -f /tmp/waf_strict.conf
-                echo -e "${GREEN}✔ 成功保护 $count 个网站${NC}"; read -p "按回车返回...";;
-            2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null | head -n 10; echo "..."; read -p "按回车返回...";;
+                rm -f /tmp/waf_strict.conf; echo -e "${GREEN}✔ 完成${NC}"; read -p "...";;
+            2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null | head -n 8; read -p "...";;
         esac
     done
 }
 
-# --- 3. 防火墙与端口 (V56 优化) ---
+# --- 3. 端口防火墙 (Layer 4) ---
 function port_manager() {
     ensure_firewall_installed || return
-    
-    # 自动激活逻辑 (解决 Status: inactive 问题)
-    if command -v ufw >/dev/null; then
-        if ! ufw status | grep -q "Status: active"; then
-            echo -e "${YELLOW}检测到 UFW 未激活，正在尝试激活...${NC}"
-            ufw allow 22/tcp >/dev/null 2>&1
-            ufw allow 80/tcp >/dev/null 2>&1
-            ufw allow 443/tcp >/dev/null 2>&1
-            echo "y" | ufw enable >/dev/null 2>&1
-        fi
-    fi
+    # 自动激活
+    if command -v ufw >/dev/null && ! ufw status | grep -q "active"; then ufw allow 22/tcp >/dev/null; ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; echo "y" | ufw enable >/dev/null; fi
 
     while true; do
-        clear; echo -e "${YELLOW}=== 🧱 端口与流量控制 ===${NC}"
-        
-        # 状态显示
-        if command -v ufw >/dev/null; then 
-            FW="UFW"
-            if ufw status | grep -q "Status: active"; then STAT="${GREEN}运行中 (Active)${NC}"; else STAT="${RED}未激活 (Inactive)${NC}"; fi
-        else 
-            FW="Firewalld"
-            if firewall-cmd --state 2>&1 | grep -q "running"; then STAT="${GREEN}运行中 (Running)${NC}"; else STAT="${RED}未运行 (Not Running)${NC}"; fi
-        fi
-        
-        echo -e "系统: $FW | 状态: $STAT"
+        clear; echo -e "${YELLOW}=== 🧱 端口防火墙 (系统层) ===${NC}"
+        if command -v ufw >/dev/null; then FW="UFW"; if ufw status | grep -q "active"; then STAT="${GREEN}Active${NC}"; else STAT="${RED}Inactive${NC}"; fi
+        else FW="Firewalld"; STAT="${GREEN}Running${NC}"; fi
+        echo -e "防火墙: $FW | 状态: $STAT"
         echo "--------------------------"
-        echo " 1. 查看开放端口"
+        echo " 1. 查看端口"
         echo " 2. 开放/关闭 端口"
-        echo " 3. 防 DOS 攻击 (标准/关闭)"
+        echo " 3. 防 DOS (标准/关闭)"
         echo " 4. 一键全开 / 一键全锁"
         echo " 0. 返回"
         read -p "选择: " f
         case $f in
             0) return;;
-            1) 
-                echo -e "${CYAN}--- 当前开放端口 ---${NC}"
-                if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi
-                echo -e "${CYAN}--------------------${NC}"
-                read -p "按回车返回...";;
-            2) 
-                read -p "输入端口号: " p
-                echo "1. 开放端口"
-                echo "2. 关闭端口"
-                read -p "选择: " a
-                if [ "$FW" == "UFW" ]; then 
-                    [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp
-                else 
-                    act=$([ "$a" == "1" ] && echo "add" || echo "remove")
-                    firewall-cmd --zone=public --${act}-port=${p}/tcp --permanent
-                    firewall-cmd --reload
-                fi
-                echo -e "${GREEN}✔ 配置成功!${NC}"; read -p "按回车返回...";;
-            3)
-                echo "1. 开启防 DOS (标准: 10r/s)"
-                echo "2. 关闭防 DOS"
-                read -p "选择: " d
-                if [ "$d" == "1" ]; then
-                    echo "limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s; limit_conn_zone \$binary_remote_addr zone=addr:10m;" > "$FW_DIR/dos_zones.conf"
-                    mkdir -p "$GATEWAY_DIR/vhost"
-                    echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"
-                    cd "$GATEWAY_DIR" && docker compose up -d >/dev/null 2>&1 && docker exec gateway_proxy nginx -s reload
-                    echo -e "${GREEN}✔ 防DOS 已开启 (标准模式)${NC}"
-                else
-                    rm -f "$FW_DIR/dos_zones.conf" "$GATEWAY_DIR/vhost/default"
-                    cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload
-                    echo -e "${GREEN}✔ 防DOS 已关闭${NC}"
-                fi
-                read -p "按回车返回...";;
-            4)
-                echo "1. 允许所有 (Allow All)"
-                echo "2. 封锁所有 (Lockdown - 保留SSH)"
-                read -p "选择: " m
-                if [ "$m" == "1" ]; then
-                    [ "$FW" == "UFW" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted
-                else
-                    if [ "$FW" == "UFW" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; ufw enable
-                    else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi
-                fi
-                echo -e "${GREEN}✔ 全局策略配置成功!${NC}"; read -p "按回车返回...";;
+            1) if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi; read -p "...";;
+            2) read -p "端口: " p; echo "1.开放 2.关闭"; read -p "选: " a;
+               if [ "$FW" == "UFW" ]; then [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp;
+               else act=$([ "$a" == "1" ] && echo "add" || echo "remove"); firewall-cmd --zone=public --${act}-port=${p}/tcp --permanent; firewall-cmd --reload; fi
+               echo -e "${GREEN}✔ 成功${NC}"; read -p "...";;
+            3) echo "1.开启防DOS 2.关闭"; read -p "选: " d
+               if [ "$d" == "1" ]; then
+                   echo "limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s; limit_conn_zone \$binary_remote_addr zone=addr:10m;" > "$FW_DIR/dos_zones.conf"
+                   mkdir -p "$GATEWAY_DIR/vhost"; echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"
+                   cd "$GATEWAY_DIR" && docker compose up -d >/dev/null 2>&1 && docker exec gateway_proxy nginx -s reload; echo -e "${GREEN}✔ 已开启${NC}"
+               else rm -f "$FW_DIR/dos_zones.conf" "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo -e "${GREEN}✔ 已关闭${NC}"; fi
+               read -p "...";;
+            4) echo "1.允许所有 2.封锁所有(保SSH)"; read -p "选: " m
+               if [ "$m" == "1" ]; then [ "$FW" == "UFW" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted
+               else if [ "$FW" == "UFW" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi; fi
+               echo -e "${GREEN}✔ 成功${NC}"; read -p "...";;
         esac
     done
 }
 
-# --- 安全中心总入口 ---
+# --- 4. 流量控制 ACL (Layer 7 - V57回归) ---
+function traffic_manager() {
+    while true; do
+        clear; echo -e "${YELLOW}=== 🌐 流量访问控制 (Nginx层) ===${NC}"
+        echo " 1. 添加 IP 黑名单 (拒绝访问)"
+        echo " 2. 添加 IP 白名单 (允许访问)"
+        echo " 3. 国家/地区封禁 (GeoIP)"
+        echo " 4. 查看当前规则"
+        echo " 5. 清空所有规则"
+        echo " 0. 返回"
+        read -p "选择: " t
+        case $t in
+            0) return;;
+            1|2)
+                type="deny"; [ "$t" == "2" ] && type="allow"
+                read -p "输入 IP 地址: " ip
+                echo "$type $ip;" >> "$FW_DIR/access.conf"
+                cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload
+                echo -e "${GREEN}✔ 已添加: $type $ip${NC}"; read -p "...";;
+            3)
+                read -p "输入国家代码 (如 cn, us, ru): " ccode
+                echo -e "${BLUE}>>> 正在下载 $ccode IP段...${NC}"
+                wget -qO- "http://www.ipdeny.com/ipblocks/data/countries/$ccode.zone" | while read line; do echo "deny $line;" >> "$FW_DIR/geo.conf"; done
+                cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload
+                echo -e "${GREEN}✔ 已封禁 $ccode 所有IP${NC}"; read -p "...";;
+            4)
+                echo -e "${CYAN}--- IP 规则 ---${NC}"
+                cat "$FW_DIR/access.conf"
+                echo -e "${CYAN}--- 国家规则 (前10行) ---${NC}"
+                head -n 10 "$FW_DIR/geo.conf"
+                read -p "按回车返回...";;
+            5)
+                echo -e "" > "$FW_DIR/access.conf"
+                echo -e "" > "$FW_DIR/geo.conf"
+                cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload
+                echo -e "${GREEN}✔ 规则已清空${NC}"; read -p "...";;
+        esac
+    done
+}
+
+# --- 安全中心 ---
 function security_center() {
     while true; do
         clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 ===${NC}"
-        echo " 1. 端口与防火墙 (Firewall)"
-        echo " 2. SSH 防暴力破解 (Fail2Ban)"
-        echo " 3. 网站防火墙 (WAF)"
-        echo " 4. HTTPS 证书管理"
-        echo " 5. 防盗链设置"
+        echo " 1. 端口与防火墙 (Layer 4 - UFW/Firewalld)"
+        echo " 2. 流量访问控制 (Layer 7 - 黑白名单/国家封禁)"
+        echo " 3. SSH 防暴力破解 (Fail2Ban)"
+        echo " 4. 网站防火墙 (WAF)"
+        echo " 5. HTTPS 证书管理"
+        echo " 6. 防盗链设置"
         echo " 0. 返回主菜单"
         read -p "选择: " s
         case $s in
             0) return;;
             1) port_manager;;
-            2) fail2ban_manager;;
-            3) waf_manager;;
-            4) cert_management;;
-            5) manage_hotlink;;
+            2) traffic_manager;;
+            3) fail2ban_manager;;
+            4) waf_manager;;
+            5) cert_management;;
+            6) manage_hotlink;;
         esac
     done
 }
 
-# ================= 菜单系统 (V56) =================
+# ================= 菜单系统 =================
 function show_menu() {
     clear
     echo -e "${GREEN}=== WordPress Docker 集群管理 ($VERSION) ===${NC}"
@@ -284,27 +272,28 @@ function show_menu() {
     echo " 11. 整站 备份与还原"
     echo ""
     echo -e "${RED}[安全中心]${NC}"
-    echo " 12. 进入安全防御中心 (Firewall/WAF/Fail2Ban...)"
+    echo " 12. 进入安全防御中心"
     echo "-----------------------------------------"
     echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载${NC} | 0. 退出"
     echo -n "请选择: "
     read option
 }
 
-# --- 其他未变动的核心功能函数 ---
+# --- 网关初始化 (V57: 修复文件挂载) ---
 function init_gateway() {
     local m=$1; if ! docker network ls | grep -q "proxy-net"; then docker network create proxy-net >/dev/null; fi
     mkdir -p "$GATEWAY_DIR"; cd "$GATEWAY_DIR"
     echo "client_max_body_size 1024m;" > "upload_size.conf"
     echo "proxy_read_timeout 600s;" >> "upload_size.conf"
     echo "proxy_send_timeout 600s;" >> "upload_size.conf"
+    # 注意：这里将 FW_DIR 下的两个配置文件直接挂载到 Nginx 的 conf.d 目录中
     cat > docker-compose.yml <<EOF
 services:
   nginx-proxy:
     image: nginxproxy/nginx-proxy
     container_name: gateway_proxy
     ports: ["80:80", "443:443"]
-    volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:ro, /var/run/docker.sock:/tmp/docker.sock:ro, ../firewall:/etc/nginx/conf.d/custom_firewall:ro, ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro]
+    volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:ro, /var/run/docker.sock:/tmp/docker.sock:ro, ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro, ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro, ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro]
     networks: ["proxy-net"]
     restart: always
     environment: ["TRUST_DOWNSTREAM_PROXY=true"]
@@ -329,7 +318,6 @@ function create_site() {
     pname=$(echo $fd | tr '.' '_'); sdir="$SITES_DIR/$fd"; [ -d "$sdir" ] && echo -e "${RED}❌ 目录已存在${NC}" && read -p "..." && return
     echo -e "\n${BLUE}>>> [1/4] 创建目录...${NC}"; mkdir -p "$sdir"
     echo -e "${BLUE}>>> [2/4] 生成配置...${NC}"
-    # 默认写入新版加强 WAF
     cat > "$sdir/waf.conf" <<EOF
 location ~* /\.(git|svn|hg|env|bak|config|sql|db|key|pem) { deny all; return 403; }
 location ~* \.(sql|bak|conf|ini|log|sh|yaml|yml|swp)$ { deny all; return 403; }
