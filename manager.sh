@@ -271,10 +271,10 @@ function enhanced_cert_management() {
     done
 }
 
-# ================= 菜单系统 (V49) =================
+# ================= 菜单系统 (V48 增强版) =================
 function show_menu() {
     clear
-    echo -e "${GREEN}=== WordPress Docker 集群管理 (V49 旗舰增强版) ===${NC}"
+    echo -e "${GREEN}=== WordPress Docker 集群管理 (V48 增强版) ===${NC}"
     check_monitoring_status
     echo "-----------------------------------------"
     echo -e "${YELLOW}[系统基石]${NC}"
@@ -419,7 +419,7 @@ EOF
     check_ssl_status "$fd"
 }
 
-# --- 其他辅助函数 (精简版，功能与V48一致) ---
+# --- 其他辅助函数 ---
 function fix_upload_limit() {
     ls -1 "$SITES_DIR"; read -p "输入域名: " d; sdir="$SITES_DIR/$d"
     [ ! -d "$sdir" ] && return
@@ -474,11 +474,6 @@ networks: {proxy-net: {external: true}}
 EOF
     cd "$sdir" && docker compose up -d >/dev/null 2>&1; check_ssl_status "$d"
 }
-
-# --- 其他功能保留原逻辑，为节省篇幅略去冗余代码，实际使用请保持完整 ---
-# (change_domain, db_manager, backup_restore_ops, manage_firewall, ssh_key_manager, manage_hotlink, create_redirect, repair_proxy, list_sites, delete_site, container_ops 逻辑与之前版本一致)
-# ... 这里为了确保完整性，请使用 V48 代码块中的相应函数 ...
-# 下面补全关键的函数调用以确保脚本可运行
 
 function repair_proxy() {
     ls -1 "$SITES_DIR"; read -p "修复域名: " d; sdir="$SITES_DIR/$d"; [ ! -d "$sdir" ] && return
