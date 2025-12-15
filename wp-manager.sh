@@ -2,7 +2,7 @@
 
 # ================= 配置区域 =================
 # 脚本版本号
-VERSION="V55 (Sec-Hardened)"
+VERSION="V56 (Firewall-Polished)"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
@@ -74,19 +74,16 @@ function update_script() {
     else echo -e "${RED}❌ 更新失败${NC}"; rm -f "$temp_file"; fi; read -p "..."
 }
 
-# ================= 安全防御中心 (V55 重构) =================
+# ================= 安全防御中心 =================
 
 # --- 1. Fail2Ban 管理 ---
 function fail2ban_manager() {
     while true; do
         clear; echo -e "${YELLOW}=== 👮 Fail2Ban SSH 防护专家 ===${NC}"
-        # 检测状态
         if systemctl is-active fail2ban >/dev/null 2>&1; then 
-            f2b_status="${GREEN}运行中${NC}"
-            banned_count=$(fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $4}')
+            f2b_status="${GREEN}运行中${NC}"; banned_count=$(fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $4}')
         else 
-            f2b_status="${RED}未运行${NC}"
-            banned_count="N/A"
+            f2b_status="${RED}未运行${NC}"; banned_count="N/A"
         fi
         echo -e "状态: $f2b_status | 当前封禁IP数: ${RED}$banned_count${NC}"
         echo "--------------------------"
@@ -102,15 +99,12 @@ function fail2ban_manager() {
                 echo -e "${BLUE}>>> 正在安装 Fail2Ban...${NC}"
                 if [ -f /etc/debian_version ]; then apt-get update && apt-get install -y fail2ban; logpath="/var/log/auth.log";
                 elif [ -f /etc/redhat-release ]; then yum install -y epel-release && yum install -y fail2ban; logpath="/var/log/secure"; fi
-                
-                echo -e "${BLUE}>>> 应用加强版配置 (5次失败封禁24小时)...${NC}"
                 cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1/8
 bantime  = 86400
 findtime = 3600
 maxretry = 5
-
 [sshd]
 enabled = true
 port    = ssh
@@ -118,18 +112,10 @@ logpath = $logpath
 backend = systemd
 EOF
                 systemctl enable fail2ban; systemctl restart fail2ban
-                echo -e "${GREEN}✔ Fail2Ban 已启动且策略已加强${NC}"; read -p "...";;
-            2) 
-                echo -e "${CYAN}=== 黑名单 IP ===${NC}"
-                fail2ban-client status sshd 2>/dev/null | grep "Banned IP list"
-                read -p "按回车返回...";;
-            3)
-                read -p "输入要解封的 IP: " uip
-                fail2ban-client set sshd unbanip $uip
-                echo "操作已提交"; read -p "...";;
-            4)
-                systemctl stop fail2ban; systemctl disable fail2ban
-                echo "已停止"; read -p "...";;
+                echo -e "${GREEN}✔ 配置成功! (5次失败封禁24小时)${NC}"; read -p "按回车返回...";;
+            2) fail2ban-client status sshd 2>/dev/null | grep "Banned IP list"; read -p "按回车返回...";;
+            3) read -p "输入 IP: " uip; fail2ban-client set sshd unbanip $uip; echo "已解封"; read -p "...";;
+            4) systemctl stop fail2ban; systemctl disable fail2ban; echo "已停止"; read -p "...";;
         esac
     done
 }
@@ -145,97 +131,109 @@ function waf_manager() {
         case $op in
             0) return;;
             1)
-                echo -e "${BLUE}>>> 正在生成增强型 WAF 配置文件...${NC}"
-                # 创建临时 WAF 文件
+                echo -e "${BLUE}>>> 分发增强型 WAF 规则...${NC}"
                 cat > /tmp/waf_strict.conf <<EOF
-# --- V55 增强型 WAF 规则 ---
-# 1. 保护敏感文件
 location ~* /\.(git|svn|hg|env|bak|config|sql|db|key|pem) { deny all; return 403; }
 location ~* \.(sql|bak|conf|ini|log|sh|yaml|yml|swp)$ { deny all; return 403; }
-
-# 2. 拦截 SQL 注入特征 (简易版)
 if (\$query_string ~* "union.*select.*\(") { return 403; }
 if (\$query_string ~* "concat.*\(") { return 403; }
-
-# 3. 拦截恶意脚本特征
 if (\$query_string ~* "base64_decode\(") { return 403; }
 if (\$query_string ~* "eval\(") { return 403; }
-
-# 4. 拦截恶意 User-Agent
 if (\$http_user_agent ~* (netcralwer|nikto|wikto|sf|sqlmap|bsqlbf|w3af|acunetix|havij|appscan)) { return 403; }
 EOF
-                echo -e "${BLUE}>>> 正在分发到所有站点...${NC}"
                 count=0
                 for d in "$SITES_DIR"/*; do
-                    if [ -d "$d" ]; then
-                        cp /tmp/waf_strict.conf "$d/waf.conf"
-                        echo " - 已更新: $(basename "$d")"
-                        # 重载配置
-                        cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1
-                        ((count++))
-                    fi
+                    if [ -d "$d" ]; then cp /tmp/waf_strict.conf "$d/waf.conf"; cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1; ((count++)); fi
                 done
                 rm -f /tmp/waf_strict.conf
-                echo -e "${GREEN}✔ 操作完成，已保护 $count 个网站${NC}"; read -p "...";;
-            2)
-                echo -e "${CYAN}--- WAF 规则预览 ---${NC}"
-                cat > /tmp/waf_preview.conf <<EOF
-location ~* /\.(git|env|sql...) { deny all; }  # 敏感文件
-if (\$query_string ~* "union.*select") { return 403; } # SQL注入
-if (\$query_string ~* "eval\(") { return 403; } # 恶意脚本
-if (\$http_user_agent ~* (sqlmap|nikto...)) { return 403; } # 扫描器
-EOF
-                cat /tmp/waf_preview.conf
-                echo -e "${CYAN}--------------------${NC}"
-                read -p "按回车返回...";;
+                echo -e "${GREEN}✔ 成功保护 $count 个网站${NC}"; read -p "按回车返回...";;
+            2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null | head -n 10; echo "..."; read -p "按回车返回...";;
         esac
     done
 }
 
-# --- 3. 防火墙与端口 (原 manage_firewall) ---
+# --- 3. 防火墙与端口 (V56 优化) ---
 function port_manager() {
     ensure_firewall_installed || return
+    
+    # 自动激活逻辑 (解决 Status: inactive 问题)
+    if command -v ufw >/dev/null; then
+        if ! ufw status | grep -q "Status: active"; then
+            echo -e "${YELLOW}检测到 UFW 未激活，正在尝试激活...${NC}"
+            ufw allow 22/tcp >/dev/null 2>&1
+            ufw allow 80/tcp >/dev/null 2>&1
+            ufw allow 443/tcp >/dev/null 2>&1
+            echo "y" | ufw enable >/dev/null 2>&1
+        fi
+    fi
+
     while true; do
         clear; echo -e "${YELLOW}=== 🧱 端口与流量控制 ===${NC}"
-        if command -v ufw >/dev/null; then FW="UFW"; STAT=$(ufw status | grep Status); else FW="Firewalld"; STAT=$(firewall-cmd --state); fi
+        
+        # 状态显示
+        if command -v ufw >/dev/null; then 
+            FW="UFW"
+            if ufw status | grep -q "Status: active"; then STAT="${GREEN}运行中 (Active)${NC}"; else STAT="${RED}未激活 (Inactive)${NC}"; fi
+        else 
+            FW="Firewalld"
+            if firewall-cmd --state 2>&1 | grep -q "running"; then STAT="${GREEN}运行中 (Running)${NC}"; else STAT="${RED}未运行 (Not Running)${NC}"; fi
+        fi
+        
         echo -e "系统: $FW | 状态: $STAT"
         echo "--------------------------"
         echo " 1. 查看开放端口"
         echo " 2. 开放/关闭 端口"
-        echo " 3. 防 DOS 攻击配置"
+        echo " 3. 防 DOS 攻击 (标准/关闭)"
         echo " 4. 一键全开 / 一键全锁"
         echo " 0. 返回"
         read -p "选择: " f
         case $f in
             0) return;;
-            1) if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi; read -p "...";;
+            1) 
+                echo -e "${CYAN}--- 当前开放端口 ---${NC}"
+                if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi
+                echo -e "${CYAN}--------------------${NC}"
+                read -p "按回车返回...";;
             2) 
-                read -p "端口号: " p; read -p "1.开放 2.关闭: " a
-                if [ "$FW" == "UFW" ]; then [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp
-                else act=$([ "$a" == "1" ] && echo "add" || echo "remove"); firewall-cmd --zone=public --${act}-port=${p}/tcp --permanent; firewall-cmd --reload; fi
-                echo "OK"; sleep 1;;
+                read -p "输入端口号: " p
+                echo "1. 开放端口"
+                echo "2. 关闭端口"
+                read -p "选择: " a
+                if [ "$FW" == "UFW" ]; then 
+                    [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp
+                else 
+                    act=$([ "$a" == "1" ] && echo "add" || echo "remove")
+                    firewall-cmd --zone=public --${act}-port=${p}/tcp --permanent
+                    firewall-cmd --reload
+                fi
+                echo -e "${GREEN}✔ 配置成功!${NC}"; read -p "按回车返回...";;
             3)
-                read -p "1.开启(标准) 2.关闭: " d
+                echo "1. 开启防 DOS (标准: 10r/s)"
+                echo "2. 关闭防 DOS"
+                read -p "选择: " d
                 if [ "$d" == "1" ]; then
                     echo "limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s; limit_conn_zone \$binary_remote_addr zone=addr:10m;" > "$FW_DIR/dos_zones.conf"
-                    mkdir -p "$GATEWAY_DIR/vhost"; echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"
+                    mkdir -p "$GATEWAY_DIR/vhost"
+                    echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"
                     cd "$GATEWAY_DIR" && docker compose up -d >/dev/null 2>&1 && docker exec gateway_proxy nginx -s reload
-                    echo -e "${GREEN}✔ 防DOS已开启${NC}"
+                    echo -e "${GREEN}✔ 防DOS 已开启 (标准模式)${NC}"
                 else
                     rm -f "$FW_DIR/dos_zones.conf" "$GATEWAY_DIR/vhost/default"
                     cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload
-                    echo -e "${GREEN}✔ 防DOS已关闭${NC}"
+                    echo -e "${GREEN}✔ 防DOS 已关闭${NC}"
                 fi
-                read -p "...";;
+                read -p "按回车返回...";;
             4)
-                read -p "1.允许所有 2.封锁所有(保留SSH): " m
+                echo "1. 允许所有 (Allow All)"
+                echo "2. 封锁所有 (Lockdown - 保留SSH)"
+                read -p "选择: " m
                 if [ "$m" == "1" ]; then
                     [ "$FW" == "UFW" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted
                 else
                     if [ "$FW" == "UFW" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; ufw enable
                     else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi
                 fi
-                echo "设置完成"; read -p "...";;
+                echo -e "${GREEN}✔ 全局策略配置成功!${NC}"; read -p "按回车返回...";;
         esac
     done
 }
@@ -262,7 +260,7 @@ function security_center() {
     done
 }
 
-# ================= 菜单系统 (V55) =================
+# ================= 菜单系统 (V56) =================
 function show_menu() {
     clear
     echo -e "${GREEN}=== WordPress Docker 集群管理 ($VERSION) ===${NC}"
@@ -456,12 +454,12 @@ location ~* \.(gif|jpg|jpeg|png|bmp|swf|webp)$ { valid_referers none blocked ser
 location / { try_files \$uri \$uri/ /index.php?\$args; }
 location ~ \.php$ { try_files \$uri =404; fastcgi_split_path_info ^(.+\.php)(/.+)$; fastcgi_pass wordpress:9000; fastcgi_index index.php; include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; fastcgi_param PATH_INFO \$fastcgi_path_info; fastcgi_read_timeout 600; } }
 EOF
-cd "$s" && docker compose restart nginx; echo "OK"; fi;; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; if [ -f "$s/nginx.conf" ]; then cat > "$s/nginx.conf" <<EOF
+cd "$s" && docker compose restart nginx; echo -e "${GREEN}✔ 配置成功!${NC}"; fi;; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; if [ -f "$s/nginx.conf" ]; then cat > "$s/nginx.conf" <<EOF
 server { listen 80; server_name localhost; root /var/www/html; index index.php; include /etc/nginx/waf.conf; client_max_body_size 512M;
 location / { try_files \$uri \$uri/ /index.php?\$args; }
 location ~ \.php$ { try_files \$uri =404; fastcgi_split_path_info ^(.+\.php)(/.+)$; fastcgi_pass wordpress:9000; fastcgi_index index.php; include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; fastcgi_param PATH_INFO \$fastcgi_path_info; fastcgi_read_timeout 600; } }
 EOF
-cd "$s" && docker compose restart nginx; echo "OK"; fi;; esac; read -p "按回车返回..."; done; }
+cd "$s" && docker compose restart nginx; echo -e "${GREEN}✔ 配置成功!${NC}"; fi;; esac; read -p "按回车返回..."; done; }
 function uninstall_cluster() {
     clear; echo -e "${RED}⚠️  危险警告：彻底卸载 ⚠️${NC}"; echo "这将删除所有网站数据！"; read -p "输入 'DELETE' 确认: " c
     [ "$c" != "DELETE" ] && return
