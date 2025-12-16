@@ -50,7 +50,7 @@ function pause_prompt() {
 
 function install_shortcut() {
     local script_path=$(readlink -f "$0")
-    if [ ! -L "/usr/bin/wp" ] || [ "$(readlink -f "/usr/bin/wp")" != "$script_path" ]; then
+if [ ! -L "/usr/bin/wp" ] || [ "$(readlink -f "/usr/bin/wp")" != "$script_path" ]; then
         ln -sf "$script_path" /usr/bin/wp && chmod +x "$script_path"
         echo -e "${GREEN}✔ 已创建快捷命令: wp${NC}"
     fi
