@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V8"
+VERSION="V7"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
@@ -16,7 +16,7 @@ MONITOR_SCRIPT="$BASE_DIR/monitor_daemon.sh"
 LISTENER_PID="$BASE_DIR/tg_listener.pid"
 LISTENER_SCRIPT="$BASE_DIR/tg_listener.sh"
 
-# 自动更新源
+# [V7 更新] 自动更新源 (GitHub Raw 链接)
 UPDATE_URL="https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh"
 
 # 颜色定义
@@ -85,11 +85,12 @@ function normalize_url() {
 }
 
 function update_script() {
-    clear; echo -e "${GREEN}=== 脚本自动更新 ===${NC}"; echo -e "版本: $VERSION"; echo -e "源: GitHub (lje02)"
+    clear; echo -e "${GREEN}=== 脚本自动更新 ===${NC}"; echo -e "版本: $VERSION"; echo -e "源: GitHub (lje02/wp-manager)"
     temp_file="/tmp/wp_manager_new.sh"
+    # GitHub Raw 通常需要 -L 参数跟随跳转
     if curl -f -L -s -o "$temp_file" "$UPDATE_URL" && head -n 1 "$temp_file" | grep -q "/bin/bash"; then
         mv "$temp_file" "$0"; chmod +x "$0"; echo -e "${GREEN}✔ 更新成功，正在重启...${NC}"; write_log "Updated script"; sleep 1; exec "$0"
-    else echo -e "${RED}❌ 更新失败!${NC}"; rm -f "$temp_file"; fi; pause_prompt
+    else echo -e "${RED}❌ 更新失败! 请检查 GitHub 网络连通性或 Raw 地址是否正确。${NC}"; rm -f "$temp_file"; fi; pause_prompt
 }
 
 function send_tg_msg() {
@@ -156,88 +157,11 @@ chmod +x "$LISTENER_SCRIPT"
 
 # ================= 3. 业务功能函数 =================
 
-# --- V72: SSH 密钥管理 (回归) ---
-function ssh_key_manager() {
-    while true; do
-        clear; echo -e "${YELLOW}=== 🔑 SSH 密钥管理 (V72) ===${NC}"
-        
-        # 检测密码登录状态
-        if grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config; then
-            PW_STAT="${GREEN}开启${NC}"
-        elif grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config; then
-            PW_STAT="${RED}关闭${NC}"
-        else
-            PW_STAT="${YELLOW}默认(可能开启)${NC}"
-        fi
-        
-        echo -e "当前密码登录状态: $PW_STAT"
-        echo "--------------------------"
-        echo " 1. 导入公钥 (Add Public Key)"
-        echo " 2. 开启 密码登录 (允许密码)"
-        echo " 3. 关闭 密码登录 (仅限密钥)"
-        echo " 0. 返回上一级"
-        echo "--------------------------"
-        read -p "请输入选项 [0-3]: " s
-        
-        f="/root/.ssh/authorized_keys"
-        c="/etc/ssh/sshd_config"
-        
-        case $s in
-            0) return;;
-            1) 
-                mkdir -p /root/.ssh; chmod 700 /root/.ssh
-                echo "请粘贴您的公钥 (ssh-rsa AAAA...):"
-                read -p "> " k
-                if [ ! -z "$k" ]; then
-                    echo "$k" >> "$f"
-                    chmod 600 "$f"
-                    echo -e "${GREEN}✔ 公钥已导入${NC}"
-                    write_log "Imported SSH Key"
-                fi
-                pause_prompt;;
-            2)
-                # 开启密码登录
-                if grep -q "^PasswordAuthentication" "$c"; then
-                    sed -i 's/^PasswordAuthentication .*/PasswordAuthentication yes/' "$c"
-                else
-                    echo "PasswordAuthentication yes" >> "$c"
-                fi
-                # 处理 Debian/Ubuntu 包含配置的情况
-                [ -d /etc/ssh/sshd_config.d ] && echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/custom.conf
-                
-                systemctl restart sshd 2>/dev/null || systemctl restart ssh
-                echo -e "${GREEN}✔ 密码登录已开启${NC}"
-                write_log "Enabled SSH Password Auth"
-                pause_prompt;;
-            3)
-                # 关闭前强制检查是否有密钥
-                if [ ! -s "$f" ]; then
-                    echo -e "${RED}❌ 错误：未检测到已安装的密钥！${NC}"
-                    echo "为了防止您无法登录服务器，禁止关闭密码登录。"
-                    echo "请先使用选项 1 导入公钥。"
-                else
-                    if grep -q "^PasswordAuthentication" "$c"; then
-                        sed -i 's/^PasswordAuthentication .*/PasswordAuthentication no/' "$c"
-                    else
-                        echo "PasswordAuthentication no" >> "$c"
-                    fi
-                    [ -d /etc/ssh/sshd_config.d ] && echo "PasswordAuthentication no" > /etc/ssh/sshd_config.d/custom.conf
-                    
-                    systemctl restart sshd 2>/dev/null || systemctl restart ssh
-                    echo -e "${GREEN}✔ 密码登录已关闭，仅支持密钥${NC}"
-                    write_log "Disabled SSH Password Auth"
-                fi
-                pause_prompt;;
-        esac
-    done
-}
-
-# --- 安全防御中心 ---
 function security_center() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V71) ===${NC}"
         
-        # 状态检测
+        # 1. 防火墙状态
         if command -v ufw >/dev/null; then
             if ufw status | grep -q "active"; then FW_ST="${GREEN}● 运行中 (UFW)${NC}"; else FW_ST="${RED}● 未启动${NC}"; fi
         elif command -v firewall-cmd >/dev/null; then
@@ -246,13 +170,25 @@ function security_center() {
             FW_ST="${YELLOW}● 未安装${NC}"
         fi
 
+        # 2. Fail2Ban状态
         if command -v fail2ban-client >/dev/null; then
             if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● 运行中${NC}"; else F2B_ST="${RED}● 已停止${NC}"; fi
         else
             F2B_ST="${YELLOW}● 未安装${NC}"
         fi
 
-        if grep -r "block_sql_injections" "$SITES_DIR" >/dev/null 2>&1; then WAF_ST="${GREEN}● 已部署${NC}"; else WAF_ST="${YELLOW}● 未检测到${NC}"; fi
+        # 3. WAF状态
+        if [ -z "$(ls -A $SITES_DIR)" ]; then
+            WAF_ST="${YELLOW}● 无站点${NC}"
+        else
+            if grep -r "V69 Ultra WAF Rules" "$SITES_DIR" >/dev/null 2>&1; then 
+                WAF_ST="${GREEN}● 已部署 (增强版)${NC}"
+            elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
+                WAF_ST="${YELLOW}● 已部署 (基础版)${NC}"
+            else 
+                WAF_ST="${RED}● 未部署${NC}"
+            fi
+        fi
 
         echo -e " 1. 端口防火墙   [$FW_ST]"
         echo -e " 2. 流量访问控制 (Nginx Layer7)"
@@ -260,10 +196,9 @@ function security_center() {
         echo -e " 4. 网站防火墙    [$WAF_ST]"
         echo -e " 5. HTTPS证书管理"
         echo -e " 6. 防盗链设置"
-        echo -e " 7. SSH 密钥管理 (导入/禁密码)"
         echo " 0. 返回主菜单"
         echo "--------------------------"
-        read -p "请输入选项 [0-7]: " s
+        read -p "请输入选项 [0-6]: " s
         case $s in 
             0) return;; 
             1) port_manager;; 
@@ -271,8 +206,7 @@ function security_center() {
             3) fail2ban_manager;; 
             4) waf_manager;; 
             5) cert_management;; 
-            6) manage_hotlink;;
-            7) ssh_key_manager;;
+            6) manage_hotlink;; 
         esac
     done 
 }
@@ -417,15 +351,17 @@ EOF
 
 function waf_manager() { 
     while true; do 
-        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 ===${NC}"
-        echo " 1. 部署增强规则"
+        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V70) ===${NC}"
+        echo " 1. 部署增强规则 (强制更新所有站点)"
         echo " 2. 查看当前规则"
         echo " 0. 返回上一级"
         echo "--------------------------"
         read -p "请输入选项 [0-2]: " o
         case $o in 
             0) return;; 
-            1) cat >/tmp/w <<EOF
+            1) 
+                echo -e "${BLUE}>>> 正在部署规则...${NC}"
+                cat >/tmp/w <<EOF
 # --- V69 Ultra WAF Rules ---
 location ~* /\.(git|svn|hg|env|bak|config|sql|db|key|pem|ssh|ftpconfig) { deny all; return 403; }
 location ~* \.(sql|bak|conf|ini|log|sh|yaml|yml|swp|install|dist)$ { deny all; return 403; }
@@ -435,7 +371,16 @@ if (\$query_string ~* "base64_decode\(") { return 403; }
 if (\$query_string ~* "eval\(") { return 403; }
 if (\$http_user_agent ~* (netcrawler|nikto|wikto|sf|sqlmap|bsqlbf|w3af|acunetix|havij|appscan)) { return 403; }
 EOF
-            for d in "$SITES_DIR"/*; do [ -d "$d" ] && cp /tmp/w "$d/waf.conf" && cd "$d" && docker compose exec -T nginx nginx -s reload; done; rm /tmp/w; echo "部署完成"; pause_prompt;; 
+                count=0
+                for d in "$SITES_DIR"/*; do 
+                    if [ -d "$d" ]; then 
+                        cp /tmp/w "$d/waf.conf" 
+                        cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1
+                        echo -e " - $(basename "$d"): ${GREEN}已更新${NC}"
+                        ((count++))
+                    fi 
+                done
+                rm /tmp/w; echo -e "${GREEN}✔ 成功部署 $count 个站点${NC}"; pause_prompt;; 
             2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null|head -10; pause_prompt;; 
         esac
     done 
@@ -451,7 +396,7 @@ function port_manager() {
         echo " 1. 查看开放端口"
         echo " 2. 开放/关闭 端口 (支持多端口)"
         echo " 3. 防 DOS 攻击 (开启/关闭)"
-        echo " 4. 一键全开 / 一键全锁"
+        echo " 4. 一键全开 / 一键全关"
         echo " 0. 返回上一级"
         echo "--------------------------"
         read -p "请输入选项 [0-4]: " f
@@ -460,7 +405,7 @@ function port_manager() {
             1) if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi; pause_prompt;; 
             2) read -p "输入端口 (如 80 443): " ports; echo "1.开放 2.关闭"; read -p "选: " a; for p in $ports; do if command -v ufw >/dev/null; then [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp; else ac=$([ "$a" == "1" ] && echo add || echo remove); firewall-cmd --zone=public --${ac}-port=$p/tcp --permanent; fi; done; command -v firewall-cmd >/dev/null && firewall-cmd --reload; echo "完成"; pause_prompt;; 
             3) echo "1.开启防DOS 2.关闭"; read -p "选: " d; if [ "$d" == "1" ]; then echo "limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s; limit_conn_zone \$binary_remote_addr zone=addr:10m;" > "$FW_DIR/dos_zones.conf"; mkdir -p "$GATEWAY_DIR/vhost"; echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker compose up -d >/dev/null 2>&1 && docker exec gateway_proxy nginx -s reload; echo "已开启"; else rm -f "$FW_DIR/dos_zones.conf" "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "已关闭"; fi; pause_prompt;; 
-            4) echo "1.全开 2.全锁"; read -p "选: " m; if [ "$m" == "1" ]; then [ -x "$(command -v ufw)" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted; else if [ -x "$(command -v ufw)" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi; fi; echo "完成"; pause_prompt;; 
+            4) echo "1.全开 2.全关"; read -p "选: " m; if [ "$m" == "1" ]; then [ -x "$(command -v ufw)" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted; else if [ -x "$(command -v ufw)" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi; fi; echo "完成"; pause_prompt;; 
         esac
     done 
 }
@@ -577,7 +522,7 @@ function show_menu() {
     echo ""
     echo -e "${YELLOW}[站点运维]${NC}"
     echo " 4. 查看站点列表"
-    echo " 5. 容器状态监控 (启停/重启)"
+    echo " 5. 容器状态监控"
     echo " 6. 删除指定站点"
     echo " 7. 更换网站域名"
     echo " 8. 修复反代配置"
@@ -589,7 +534,7 @@ function show_menu() {
     echo " 12. 整站 备份与还原 (智能扫描)"
     echo ""
     echo -e "${RED}[安全与监控]${NC}"
-    echo " 13. 安全防御 (防火墙/WAF/fail2ban/证书/fail2ban/密钥)"
+    echo " 13. 安全防御中心 (防火墙/WAF/证书/ssh防爆破)"
     echo " 14. Telegram 通知 (报警/查看)"
     echo " 15. 系统资源监控"
     echo " 16. 日志管理系统"
