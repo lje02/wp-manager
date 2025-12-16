@@ -16,7 +16,7 @@ MONITOR_SCRIPT="$BASE_DIR/monitor_daemon.sh"
 LISTENER_PID="$BASE_DIR/tg_listener.pid"
 LISTENER_SCRIPT="$BASE_DIR/tg_listener.sh"
 
-# [V71 更新] 自动更新源 (GitHub Raw 链接)
+# [V7 更新] 自动更新源 (GitHub Raw 链接)
 UPDATE_URL="https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh"
 
 # 颜色定义
