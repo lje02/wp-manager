@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V66 (UI-Restored)"
+VERSION="V67 (UI-Remastered)"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
@@ -139,7 +139,7 @@ while true; do
                     ip=\$(curl -s4 ifconfig.me)
                     reply "📊 **系统状态**%0A💻 IP: \$ip%0A🧠 负载: \$cpu%0A💾 内存: \$mem%0A💿 磁盘: \$disk" ;;
                 "/reboot_nginx")
-                    if [ -d "\$GATEWAY_DIR" ]; then cd "\$GATEWAY_DIR" && docker compose restart nginx-proxy; reply "✅ Nginx 网关已重启"; else reply "❌ 找不到网关"; fi ;;
+                    if [ -d "\$GATEWAY_DIR" ]; then cd "\$GATEWAY_DIR" && docker compose restart nginx-proxy; reply "✅ Nginx 网关已重启"; else reply "❌ 找不到网关目录"; fi ;;
             esac
         fi
         next_offset=\$((update_id + 1)); echo \$next_offset > /tmp/tg_offset.txt
@@ -158,42 +158,121 @@ function telegram_manager() {
         if [ -f "$TG_CONF" ]; then source "$TG_CONF"; fi
         if [ -f "$MONITOR_PID" ] && kill -0 $(cat "$MONITOR_PID") 2>/dev/null; then M_STAT="${GREEN}运行中${NC}"; else M_STAT="${RED}未启动${NC}"; fi
         if [ -f "$LISTENER_PID" ] && kill -0 $(cat "$LISTENER_PID") 2>/dev/null; then L_STAT="${GREEN}运行中${NC}"; else L_STAT="${RED}未启动${NC}"; fi
-        echo -e "配置: Token=${TG_BOT_TOKEN:0:5}*** | ChatID=$TG_CHAT_ID"
-        echo -e "1. [资源报警] 守护进程: $M_STAT"
-        echo -e "2. [指令交互] 监听进程: $L_STAT (支持 /status)"
+        
+        echo -e "Token: ${TG_BOT_TOKEN:0:5}*** | ChatID: $TG_CHAT_ID"
+        echo -e "守护进程: $M_STAT | 监听进程: $L_STAT"
         echo "--------------------------"
-        echo " 3. 配置 Token & ID"
-        echo " 4. 启动/重启 资源报警"
-        echo " 5. 启动/重启 指令监听 (需安装jq)"
-        echo " 6. 停止所有后台进程"
-        echo " 7. 发送测试消息"
-        echo " 0. 返回"
-        read -p "选择: " t
+        echo " 1. 配置 Token 和 ChatID"
+        echo " 2. 启动/重启 资源报警 (守护进程)"
+        echo " 3. 启动/重启 指令监听 (交互模式)"
+        echo " 4. 停止所有后台进程"
+        echo " 5. 发送测试消息"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-5]: " t
         case $t in
             0) return;;
-            3) read -p "Token: " tk; echo "TG_BOT_TOKEN=\"$tk\"" > "$TG_CONF"; read -p "ChatID: " ci; echo "TG_CHAT_ID=\"$ci\"" >> "$TG_CONF"; echo "已保存"; pause_prompt;;
-            4) generate_monitor_script; [ -f "$MONITOR_PID" ] && kill $(cat "$MONITOR_PID") 2>/dev/null; nohup "$MONITOR_SCRIPT" >/dev/null 2>&1 & echo $! > "$MONITOR_PID"; send_tg_msg "✅ 资源报警已启动"; echo "已启动"; pause_prompt;;
-            5) check_dependencies; generate_listener_script; [ -f "$LISTENER_PID" ] && kill $(cat "$LISTENER_PID") 2>/dev/null; nohup "$LISTENER_SCRIPT" >/dev/null 2>&1 & echo $! > "$LISTENER_PID"; send_tg_msg "✅ 指令监听已启动"; echo "已启动，请发送 /status"; pause_prompt;;
-            6) [ -f "$MONITOR_PID" ] && kill $(cat "$MONITOR_PID") 2>/dev/null && rm "$MONITOR_PID"; [ -f "$LISTENER_PID" ] && kill $(cat "$LISTENER_PID") 2>/dev/null && rm "$LISTENER_PID"; echo "已停止"; pause_prompt;;
-            7) send_tg_msg "🔔 测试消息 OK"; echo "已发送"; pause_prompt;;
+            1) read -p "Token: " tk; echo "TG_BOT_TOKEN=\"$tk\"" > "$TG_CONF"; read -p "ChatID: " ci; echo "TG_CHAT_ID=\"$ci\"" >> "$TG_CONF"; echo "已保存"; pause_prompt;;
+            2) generate_monitor_script; [ -f "$MONITOR_PID" ] && kill $(cat "$MONITOR_PID") 2>/dev/null; nohup "$MONITOR_SCRIPT" >/dev/null 2>&1 & echo $! > "$MONITOR_PID"; send_tg_msg "✅ 资源报警已启动"; echo "已启动"; pause_prompt;;
+            3) check_dependencies; generate_listener_script; [ -f "$LISTENER_PID" ] && kill $(cat "$LISTENER_PID") 2>/dev/null; nohup "$LISTENER_SCRIPT" >/dev/null 2>&1 & echo $! > "$LISTENER_PID"; send_tg_msg "✅ 指令监听已启动"; echo "已启动，请发送 /status"; pause_prompt;;
+            4) [ -f "$MONITOR_PID" ] && kill $(cat "$MONITOR_PID") 2>/dev/null && rm "$MONITOR_PID"; [ -f "$LISTENER_PID" ] && kill $(cat "$LISTENER_PID") 2>/dev/null && rm "$LISTENER_PID"; echo "已停止"; pause_prompt;;
+            5) send_tg_msg "🔔 测试消息 OK"; echo "已发送"; pause_prompt;;
         esac
     done
 }
 
 function sys_monitor() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🖥️ 系统监控 ===${NC}"
-        echo -e "CPU: $(uptime|awk -F'average:' '{print $2}')"
-        if command -v free >/dev/null; then echo -e "MEM: $(free -h|grep Mem|awk '{print $3 "/" $2}')"; fi
-        echo -e "Disk: $(df -h /|awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
-        echo -e "Conn: $(netstat -an|grep ESTABLISHED|wc -l 2>/dev/null || ss -s|grep est|awk '{print $2}')"
-        echo "--------------------------"; echo "回车刷新, 0退出"; read -t 5 -p "> " o; [ "$o" == "0" ] && return
+        clear; echo -e "${YELLOW}=== 🖥️ 系统资源监控 ===${NC}"
+        echo -e "CPU 负载 : $(uptime|awk -F'average:' '{print $2}')"
+        if command -v free >/dev/null; then echo -e "内存使用 : $(free -h|grep Mem|awk '{print $3 "/" $2}')"; fi
+        echo -e "磁盘占用 : $(df -h /|awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+        echo -e "运行时间 : $(uptime -p)"
+        echo -e "TCP连接数: $(netstat -an|grep ESTABLISHED|wc -l 2>/dev/null || ss -s|grep est|awk '{print $2}')"
+        echo "--------------------------"
+        echo " 按回车键刷新数据"
+        echo " 输入 0 返回上一级"
+        read -t 5 -p "> " o; [ "$o" == "0" ] && return
     done
 }
-function log_manager() { while true; do clear; echo -e "${YELLOW}=== 日志管理 ===${NC}"; echo "1.查看 2.清空 3.定时清理 0.返回"; read -p "选: " l; case $l in 0) return;; 1) tail -n 50 "$LOG_FILE"; pause_prompt;; 2) echo "">"$LOG_FILE"; echo "OK"; pause_prompt;; 3) crontab -l 2>/dev/null|grep -v "wp-cluster"|crontab -; (crontab -l 2>/dev/null; echo "0 3 * * * find $BASE_DIR -name '*.log' -mtime +7 -delete #wp-cluster-log-clean")|crontab -; echo "OK"; pause_prompt;; esac; done; }
-function container_ops() { while true; do clear; echo -e "${YELLOW}=== 容器监控 ===${NC}"; echo "Gateway:"; cd "$GATEWAY_DIR" && docker compose ps --format "table {{.Service}}\t{{.State}}\t{{.Status}}"|tail -n +2; for d in "$SITES_DIR"/*; do [ -d "$d" ] && echo "$(basename "$d"):" && cd "$d" && docker compose ps --all --format "table {{.Service}}\t{{.State}}\t{{.Status}}"|tail -n +2; done; echo "1.全启 2.全停 3.全重启 4.指定 0.返回"; read -p "选: " c; case $c in 0) return;; 1) cd "$GATEWAY_DIR" && docker compose up -d; for d in "$SITES_DIR"/*; do cd "$d" && docker compose up -d; done; echo "Done"; pause_prompt;; 2) for d in "$SITES_DIR"/*; do cd "$d" && docker compose stop; done; cd "$GATEWAY_DIR" && docker compose stop; echo "Done"; pause_prompt;; 3) cd "$GATEWAY_DIR" && docker compose restart; for d in "$SITES_DIR"/*; do cd "$d" && docker compose restart; done; echo "Done"; pause_prompt;; 4) ls -1 "$SITES_DIR"; read -p "域名: " d; cd "$SITES_DIR/$d" && read -p "1.启 2.停 3.重启: " a && ([ "$a" == "1" ] && docker compose up -d || ([ "$a" == "2" ] && docker compose stop || docker compose restart)); echo "OK"; pause_prompt;; esac; done; }
-function component_manager() { while true; do clear; echo -e "${YELLOW}=== 组件升降级 ===${NC}"; ls -1 "$SITES_DIR"; read -p "域名(0返): " d; [ "$d" == "0" ] && return; sdir="$SITES_DIR/$d"; cur_wp=$(grep "image: wordpress" "$sdir/docker-compose.yml"|awk '{print $2}'); cur_db=$(grep "image: .*sql" "$sdir/docker-compose.yml"|awk '{print $2}'); echo "当前: PHP=[$cur_wp] DB=[$cur_db]"; echo "1.PHP 2.DB 3.Redis 4.Nginx 0.返回"; read -p "选: " o; case $o in 0) break;; 1) echo "1.7.4 2.8.0 3.8.1 4.8.2 5.Latest"; read -p "选: " p; case $p in 1) t="php7.4-fpm-alpine";; 2) t="php8.0-fpm-alpine";; 3) t="php8.1-fpm-alpine";; 4) t="php8.2-fpm-alpine";; 5) t="fpm-alpine";; *) continue;; esac; sed -i "s|image: wordpress:.*|image: wordpress:$t|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "OK"; write_log "PHP update $d $t"; pause_prompt;; 2) echo "1.M5.7 2.M8.0 3.Latest 4.Ma10.6 5.Latest"; read -p "选: " v; case $v in 1) i="mysql:5.7";; 2) i="mysql:8.0";; 3) i="mysql:latest";; 4) i="mariadb:10.6";; 5) i="mariadb:latest";; *) continue;; esac; sed -i "s|image: .*sql:.*|image: $i|g" "$sdir/docker-compose.yml"; sed -i "s|image: mariadb:.*|image: $i|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "OK"; write_log "DB update $d $i"; pause_prompt;; 3) echo "1.6.2 2.7.0 3.Latest"; read -p "选: " r; case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; *) continue;; esac; sed -i "s|image: redis:.*|image: redis:$rt|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "OK"; write_log "Redis update $d $rt"; pause_prompt;; 4) echo "1.Alpine 2.Latest"; read -p "选: " n; [ "$n" == "2" ] && nt="latest" || nt="alpine"; sed -i "s|image: nginx:.*|image: nginx:$nt|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "OK"; write_log "Nginx update $d $nt"; pause_prompt;; esac; done; }
-function fail2ban_manager() { while true; do clear; echo -e "${YELLOW}=== Fail2Ban ===${NC}"; echo "1.安装(5次封24h) 2.列表 3.解封 0.返回"; read -p "选: " o; case $o in 0) return;; 1) echo "安装..."; if [ -f /etc/debian_version ]; then apt-get install -y fail2ban; lp="/var/log/auth.log"; else yum install -y fail2ban; lp="/var/log/secure"; fi; cat >/etc/fail2ban/jail.local <<EOF
+
+function log_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 📜 日志管理系统 ===${NC}"
+        echo " 1. 查看最新日志 (Top 50)"
+        echo " 2. 清空日志文件"
+        echo " 3. 配置定时清理任务 (7天)"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-3]: " l
+        case $l in 
+            0) return;; 
+            1) tail -n 50 "$LOG_FILE"; pause_prompt;; 
+            2) echo "">"$LOG_FILE"; echo "日志已清空"; pause_prompt;; 
+            3) crontab -l 2>/dev/null|grep -v "wp-cluster"|crontab -; (crontab -l 2>/dev/null; echo "0 3 * * * find $BASE_DIR -name '*.log' -mtime +7 -delete #wp-cluster-log-clean")|crontab -; echo "定时任务已配置"; pause_prompt;; 
+        esac
+    done 
+}
+
+function container_ops() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 📊 容器状态监控 ===${NC}"
+        echo -e "【核心网关】"; cd "$GATEWAY_DIR" && docker compose ps --format "table {{.Service}}\t{{.State}}\t{{.Status}}"|tail -n +2
+        for d in "$SITES_DIR"/*; do [ -d "$d" ] && echo -e "【站点: $(basename "$d")】" && cd "$d" && docker compose ps --all --format "table {{.Service}}\t{{.State}}\t{{.Status}}"|tail -n +2; done
+        echo "--------------------------"
+        echo " 1. 全部启动 (Start All)"
+        echo " 2. 全部停止 (Stop All)"
+        echo " 3. 全部重启 (Restart All)"
+        echo " 4. 指定站点操作"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-4]: " c
+        case $c in 
+            0) return;; 
+            1) cd "$GATEWAY_DIR" && docker compose up -d; for d in "$SITES_DIR"/*; do cd "$d" && docker compose up -d; done; echo "执行完成"; pause_prompt;; 
+            2) for d in "$SITES_DIR"/*; do cd "$d" && docker compose stop; done; cd "$GATEWAY_DIR" && docker compose stop; echo "执行完成"; pause_prompt;; 
+            3) cd "$GATEWAY_DIR" && docker compose restart; for d in "$SITES_DIR"/*; do cd "$d" && docker compose restart; done; echo "执行完成"; pause_prompt;; 
+            4) ls -1 "$SITES_DIR"; read -p "输入域名: " d; cd "$SITES_DIR/$d" && read -p "1.启动 2.停止 3.重启: " a && ([ "$a" == "1" ] && docker compose up -d || ([ "$a" == "2" ] && docker compose stop || docker compose restart)); echo "执行完成"; pause_prompt;; 
+        esac
+    done 
+}
+
+function component_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 🆙 组件版本升降级 ===${NC}"
+        ls -1 "$SITES_DIR"; echo "--------------------------"; read -p "输入域名 (0返回): " d; [ "$d" == "0" ] && return
+        sdir="$SITES_DIR/$d"; cur_wp=$(grep "image: wordpress" "$sdir/docker-compose.yml"|awk '{print $2}'); cur_db=$(grep "image: .*sql" "$sdir/docker-compose.yml"|awk '{print $2}'); 
+        echo -e "当前: PHP=[$cur_wp] DB=[$cur_db]"
+        echo "--------------------------"
+        echo " 1. 切换 PHP 版本"
+        echo " 2. 切换 数据库 版本 (高危)"
+        echo " 3. 切换 Redis 版本"
+        echo " 4. 切换 Nginx 版本"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-4]: " op
+        case $op in 
+            0) break;; 
+            1) echo "1.PHP 7.4  2.PHP 8.0  3.PHP 8.1  4.PHP 8.2  5.Latest"; read -p "选择: " p; case $p in 1) t="php7.4-fpm-alpine";; 2) t="php8.0-fpm-alpine";; 3) t="php8.1-fpm-alpine";; 4) t="php8.2-fpm-alpine";; 5) t="fpm-alpine";; *) continue;; esac; sed -i "s|image: wordpress:.*|image: wordpress:$t|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "切换完成"; write_log "PHP update $d $t"; pause_prompt;; 
+            2) echo "1.MySQL5.7 2.MySQL8.0 3.Latest 4.MariaDB10.6 5.Latest"; read -p "选择: " v; case $v in 1) i="mysql:5.7";; 2) i="mysql:8.0";; 3) i="mysql:latest";; 4) i="mariadb:10.6";; 5) i="mariadb:latest";; *) continue;; esac; sed -i "s|image: .*sql:.*|image: $i|g" "$sdir/docker-compose.yml"; sed -i "s|image: mariadb:.*|image: $i|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "切换完成"; write_log "DB update $d $i"; pause_prompt;; 
+            3) echo "1.Redis6.2 2.Redis7.0 3.Latest"; read -p "选择: " r; case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; *) continue;; esac; sed -i "s|image: redis:.*|image: redis:$rt|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "切换完成"; write_log "Redis update $d $rt"; pause_prompt;; 
+            4) echo "1.Alpine 2.Latest"; read -p "选择: " n; [ "$n" == "2" ] && nt="latest" || nt="alpine"; sed -i "s|image: nginx:.*|image: nginx:$nt|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "切换完成"; write_log "Nginx update $d $nt"; pause_prompt;; 
+        esac
+    done 
+}
+
+function fail2ban_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 👮 Fail2Ban 防护专家 ===${NC}"
+        echo " 1. 安装/重置 (5次封24h)"
+        echo " 2. 查看被封禁 IP"
+        echo " 3. 解封指定 IP"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-3]: " o
+        case $o in 
+            0) return;; 
+            1) echo "安装配置中..."; if [ -f /etc/debian_version ]; then apt-get install -y fail2ban; lp="/var/log/auth.log"; else yum install -y fail2ban; lp="/var/log/secure"; fi; cat >/etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip=127.0.0.1/8
 bantime=86400
@@ -204,15 +283,102 @@ port=ssh
 logpath=$lp
 backend=systemd
 EOF
-systemctl restart fail2ban; echo "OK"; pause_prompt;; 2) fail2ban-client status sshd 2>/dev/null|grep Banned; pause_prompt;; 3) read -p "IP: " i; fail2ban-client set sshd unbanip $i; echo "OK"; pause_prompt;; esac; done; }
-function waf_manager() { while true; do clear; echo -e "${YELLOW}=== WAF ===${NC}"; echo "1.部署规则 2.查看 0.返回"; read -p "选: " o; case $o in 0) return;; 1) cat >/tmp/w <<EOF
+            systemctl enable fail2ban; systemctl restart fail2ban; echo "配置完成"; pause_prompt;; 
+            2) fail2ban-client status sshd 2>/dev/null|grep Banned; pause_prompt;; 
+            3) read -p "输入 IP: " i; fail2ban-client set sshd unbanip $i; echo "已解封"; pause_prompt;; 
+        esac
+    done 
+}
+
+function waf_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 ===${NC}"
+        echo " 1. 部署增强规则"
+        echo " 2. 查看当前规则"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-2]: " o
+        case $o in 
+            0) return;; 
+            1) cat >/tmp/w <<EOF
 location ~* /\.(git|svn|env|sql|db) { deny all; return 403; }
 if (\$query_string ~* "(union.*select|eval\(|base64_)") { return 403; }
+if (\$http_user_agent ~* (scan|sqlmap|nikto)) { return 403; }
 EOF
-for d in "$SITES_DIR"/*; do [ -d "$d" ] && cp /tmp/w "$d/waf.conf" && cd "$d" && docker compose exec -T nginx nginx -s reload; done; rm /tmp/w; echo "OK"; pause_prompt;; 2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null|head -5; pause_prompt;; esac; done; }
-function port_manager() { ensure_firewall_installed || return; if command -v ufw >/dev/null && ! ufw status | grep -q "active"; then ufw allow 22/tcp >/dev/null; ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; echo "y" | ufw enable >/dev/null; fi; while true; do clear; echo -e "${YELLOW}=== 端口防火墙 ===${NC}"; if command -v ufw >/dev/null; then FW="UFW"; else FW="Firewalld"; fi; echo "防火墙: $FW"; echo "1.列表 2.开关端口(多端口) 3.防DOS 4.全开/锁 0.返回"; read -p "选: " f; case $f in 0) return;; 1) if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi; pause_prompt;; 2) read -p "端口: " ports; echo "1.开 2.关"; read -p "选: " a; for p in $ports; do if command -v ufw >/dev/null; then [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp; else ac=$([ "$a" == "1" ] && echo add || echo remove); firewall-cmd --zone=public --${ac}-port=$p/tcp --permanent; fi; done; command -v firewall-cmd >/dev/null && firewall-cmd --reload; echo "OK"; pause_prompt;; 3) echo "1.开启防DOS 2.关闭"; read -p "选: " d; if [ "$d" == "1" ]; then echo "limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s; limit_conn_zone \$binary_remote_addr zone=addr:10m;" > "$FW_DIR/dos_zones.conf"; mkdir -p "$GATEWAY_DIR/vhost"; echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker compose up -d >/dev/null 2>&1 && docker exec gateway_proxy nginx -s reload; echo "OK"; else rm -f "$FW_DIR/dos_zones.conf" "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "Off"; fi; pause_prompt;; 4) echo "1.全开 2.全锁"; read -p "选: " m; if [ "$m" == "1" ]; then [ -x "$(command -v ufw)" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted; else if [ -x "$(command -v ufw)" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi; fi; echo "OK"; pause_prompt;; esac; done; }
-function traffic_manager() { while true; do clear; echo -e "${YELLOW}=== 流量ACL ===${NC}"; echo "1.黑 2.白 3.国家 4.清空 0.返回"; read -p "选: " t; case $t in 0) return;; 1|2) tp="deny"; [ "$t" == "2" ] && tp="allow"; read -p "IP: " i; echo "$tp $i;" >> "$FW_DIR/access.conf"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 3) read -p "代码(cn): " c; wget -qO- "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" | while read l; do echo "deny $l;" >> "$FW_DIR/geo.conf"; done; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 4) echo "">"$FW_DIR/access.conf"; echo "">"$FW_DIR/geo.conf"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; esac; done; }
-function security_center() { while true; do clear; echo -e "${YELLOW}=== 安全中心 ===${NC}"; echo "1.端口 2.流量ACL 3.Fail2Ban 4.WAF 5.证书 6.防盗链 0.返回"; read -p "选: " s; case $s in 0) return;; 1) port_manager;; 2) traffic_manager;; 3) fail2ban_manager;; 4) waf_manager;; 5) cert_management;; 6) manage_hotlink;; esac; done; }
+            for d in "$SITES_DIR"/*; do [ -d "$d" ] && cp /tmp/w "$d/waf.conf" && cd "$d" && docker compose exec -T nginx nginx -s reload; done; rm /tmp/w; echo "部署完成"; pause_prompt;; 
+            2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null|head -5; pause_prompt;; 
+        esac
+    done 
+}
+
+function port_manager() { 
+    ensure_firewall_installed || return
+    if command -v ufw >/dev/null && ! ufw status | grep -q "active"; then ufw allow 22/tcp >/dev/null; ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; echo "y" | ufw enable >/dev/null; fi
+    while true; do 
+        clear; echo -e "${YELLOW}=== 🧱 端口防火墙 ===${NC}"
+        if command -v ufw >/dev/null; then FW="UFW"; else FW="Firewalld"; fi; echo "当前防火墙: $FW"
+        echo "--------------------------"
+        echo " 1. 查看开放端口"
+        echo " 2. 开放/关闭 端口 (支持多端口)"
+        echo " 3. 防 DOS 攻击 (开启/关闭)"
+        echo " 4. 一键全开 / 一键全锁"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-4]: " f
+        case $f in 
+            0) return;; 
+            1) if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi; pause_prompt;; 
+            2) read -p "输入端口 (如 80 443): " ports; echo "1.开放 2.关闭"; read -p "选: " a; for p in $ports; do if command -v ufw >/dev/null; then [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp; else ac=$([ "$a" == "1" ] && echo add || echo remove); firewall-cmd --zone=public --${ac}-port=$p/tcp --permanent; fi; done; command -v firewall-cmd >/dev/null && firewall-cmd --reload; echo "完成"; pause_prompt;; 
+            3) echo "1.开启防DOS 2.关闭"; read -p "选: " d; if [ "$d" == "1" ]; then echo "limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s; limit_conn_zone \$binary_remote_addr zone=addr:10m;" > "$FW_DIR/dos_zones.conf"; mkdir -p "$GATEWAY_DIR/vhost"; echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker compose up -d >/dev/null 2>&1 && docker exec gateway_proxy nginx -s reload; echo "已开启"; else rm -f "$FW_DIR/dos_zones.conf" "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "已关闭"; fi; pause_prompt;; 
+            4) echo "1.全开 2.全锁"; read -p "选: " m; if [ "$m" == "1" ]; then [ -x "$(command -v ufw)" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted; else if [ -x "$(command -v ufw)" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi; fi; echo "完成"; pause_prompt;; 
+        esac
+    done 
+}
+
+function traffic_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 🌐 流量控制 (ACL) ===${NC}"
+        echo " 1. 添加 黑名单 IP"
+        echo " 2. 添加 白名单 IP"
+        echo " 3. 封禁 指定国家"
+        echo " 4. 清空 所有规则"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-4]: " t
+        case $t in 
+            0) return;; 
+            1|2) tp="deny"; [ "$t" == "2" ] && tp="allow"; read -p "IP: " i; echo "$tp $i;" >> "$FW_DIR/access.conf"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
+            3) read -p "国家代码(cn): " c; wget -qO- "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" | while read l; do echo "deny $l;" >> "$FW_DIR/geo.conf"; done; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
+            4) echo "">"$FW_DIR/access.conf"; echo "">"$FW_DIR/geo.conf"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
+        esac
+    done 
+}
+
+function security_center() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 ===${NC}"
+        echo " 1. 端口防火墙 (系统层)"
+        echo " 2. 流量访问控制 (Nginx层)"
+        echo " 3. SSH 防暴破 (Fail2Ban)"
+        echo " 4. 网站防火墙 (WAF)"
+        echo " 5. HTTPS 证书管理"
+        echo " 6. 防盗链设置"
+        echo " 0. 返回主菜单"
+        echo "--------------------------"
+        read -p "请输入选项 [0-6]: " s
+        case $s in 
+            0) return;; 
+            1) port_manager;; 
+            2) traffic_manager;; 
+            3) fail2ban_manager;; 
+            4) waf_manager;; 
+            5) cert_management;; 
+            6) manage_hotlink;; 
+        esac
+    done 
+}
+
+# --- 基础操作函数 ---
 function init_gateway() { local m=$1; if ! docker network ls|grep -q proxy-net; then docker network create proxy-net >/dev/null; fi; mkdir -p "$GATEWAY_DIR"; cd "$GATEWAY_DIR"; echo "client_max_body_size 1024m;" > upload_size.conf; echo "proxy_read_timeout 600s;" >> upload_size.conf; echo "proxy_send_timeout 600s;" >> upload_size.conf; cat > docker-compose.yml <<EOF
 services:
   nginx-proxy: {image: nginxproxy/nginx-proxy, container_name: gateway_proxy, ports: ["80:80", "443:443"], volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:ro, /var/run/docker.sock:/tmp/docker.sock:ro, ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro, ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro, ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro], networks: ["proxy-net"], restart: always, environment: ["TRUST_DOWNSTREAM_PROXY=true"]}
@@ -221,6 +387,7 @@ volumes: {conf: , vhost: , html: , certs: , acme: }
 networks: {proxy-net: {external: true}}
 EOF
 if docker compose up -d --remove-orphans >/dev/null 2>&1; then [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关启动成功${NC}"; else echo -e "${RED}✘ 网关启动失败${NC}"; [ "$m" == "force" ] && docker compose up -d; fi; }
+
 function create_site() {
     read -p "1. 域名: " fd; host_ip=$(curl -s4 ifconfig.me); if command -v dig >/dev/null; then dip=$(dig +short $fd|head -1); else dip=$(getent hosts $fd|awk '{print $1}'); fi; if [ ! -z "$dip" ] && [ "$dip" != "$host_ip" ]; then echo -e "${RED}IP不符${NC}"; read -p "继续? (y/n): " f; [ "$f" != "y" ] && return; fi
     read -p "2. 邮箱: " email; read -p "3. DB密码: " db_pass
@@ -291,45 +458,46 @@ cd "$s" && docker compose restart nginx; echo "OK";; esac; pause_prompt; done; }
 function backup_restore_ops() { while true; do clear; echo "1.Backup 2.Restore 0.Back"; read -p "Sel: " b; case $b in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; [ ! -d "$s" ] && continue; bd="$s/backups/$(date +%Y%m%d%H%M)"; mkdir -p "$bd"; cd "$s"; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql"; wp_c=$(docker compose ps -q wordpress); docker run --rm --volumes-from $wp_c -v "$bd":/backup alpine tar czf /backup/files.tar.gz /var/www/html/wp-content; cp *.conf docker-compose.yml "$bd/"; echo "Backup: $bd"; write_log "Backup $d"; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; bd="$s/backups"; [ ! -d "$bd" ] && continue; lt=$(ls -t "$bd"|head -1); if [ ! -z "$lt" ]; then echo "最新: $lt"; read -p "使用最新? (y/n): " u; [ "$u" == "y" ] && n="$lt"; fi; if [ -z "$n" ]; then ls -1 "$bd"; read -p "Name: " n; fi; bp="$bd/$n"; [ ! -d "$bp" ] && continue; cd "$s" && docker compose down; vol=$(docker volume ls -q|grep "${d//./_}_wp_data"); docker run --rm -v $vol:/var/www/html -v "$bp":/backup alpine tar xzf /backup/files.tar.gz -C /; docker compose up -d db; sleep 15; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysql -u root -p"$pwd" < "$bp/db.sql"; docker compose up -d; echo "Restored"; write_log "Restored $d"; pause_prompt;; esac; done; }
 function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/wp; echo "已卸载"); }
 
-# ================= 4. 菜单 =================
+# ================= 4. 菜单显示函数 =================
 function show_menu() {
     clear
     echo -e "${GREEN}=== WordPress Docker 集群管理 ($VERSION) ===${NC}"
     echo -e "${CYAN}GitHub: lje02/wp-manager${NC}"
     echo "-----------------------------------------"
-    echo -e "${YELLOW}[新建]${NC}"
-    echo " 1. 部署 WordPress"
-    echo " 2. 新建 反向代理"
-    echo " 3. 新建 域名跳转"
+    echo -e "${YELLOW}[新建站点]${NC}"
+    echo " 1. 部署 WordPress 新站"
+    echo " 2. 新建 反向代理 (IP:端口 / 域名)"
+    echo " 3. 新建 域名重定向 (301)"
     echo ""
-    echo -e "${YELLOW}[运维]${NC}"
-    echo " 4. 站点列表"
-    echo " 5. 容器监控"
-    echo " 6. 销毁站点"
-    echo " 7. 更换域名"
-    echo " 8. 修复反代"
-    echo " 9. 组件升降级"
-    echo " 10. 扩容上传"
+    echo -e "${YELLOW}[站点运维]${NC}"
+    echo " 4. 查看站点列表"
+    echo " 5. 容器状态监控 (启停/重启)"
+    echo " 6. 销毁指定站点"
+    echo " 7. 更换网站域名"
+    echo " 8. 修复反代配置"
+    echo -e " 9. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
+    echo " 10. 解除上传限制 (一键扩容)"
     echo ""
-    echo -e "${YELLOW}[数据]${NC}"
-    echo " 11. 数据库管理"
-    echo " 12. 备份与还原"
+    echo -e "${YELLOW}[数据管理]${NC}"
+    echo " 11. 数据库 导出/导入"
+    echo " 12. 整站 备份与还原 (智能扫描)"
     echo ""
     echo -e "${RED}[安全与监控]${NC}"
-    echo " 13. 安全防御中心 (Firewall/WAF/ACL)"
-    echo " 14. Telegram 机器人 (指令/报警)"
-    echo " 15. 系统资源面板"
+    echo " 13. 安全防御中心 (防火墙/WAF/证书)"
+    echo " 14. Telegram 通知 (报警/指令)"
+    echo " 15. 系统资源监控"
     echo " 16. 日志管理系统"
     echo "-----------------------------------------"
-    echo -e "${BLUE} u. 更新  x. 卸载  0. 退出${NC}"
+    echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载${NC} | 0. 退出"
     echo -n "请选择: "
     read option
 }
 
-# ================= 5. 主程序 =================
+# ================= 5. 主程序循环 =================
 check_dependencies
 install_shortcut
 if ! docker ps --format '{{.Names}}' | grep -q "^gateway_proxy$"; then echo "初始化网关..."; init_gateway "auto"; fi
+
 while true; do 
     show_menu 
     case $option in 
