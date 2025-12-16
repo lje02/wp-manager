@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V67 (UI-Remastered)"
+VERSION="V68 (Security-Dashboard)"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
@@ -152,6 +152,52 @@ chmod +x "$LISTENER_SCRIPT"
 
 # ================= 3. 业务功能函数 =================
 
+# --- 安全防御中心 (V68 重制) ---
+function security_center() {
+    while true; do
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 ===${NC}"
+        
+        # 1. 防火墙状态检测
+        if command -v ufw >/dev/null; then
+            if ufw status | grep -q "active"; then FW_ST="${GREEN}● 运行中 (UFW)${NC}"; else FW_ST="${RED}● 未启动${NC}"; fi
+        elif command -v firewall-cmd >/dev/null; then
+            if firewall-cmd --state 2>&1 | grep -q "running"; then FW_ST="${GREEN}● 运行中 (Firewalld)${NC}"; else FW_ST="${RED}● 未启动${NC}"; fi
+        else
+            FW_ST="${YELLOW}● 未安装${NC}"
+        fi
+
+        # 2. Fail2Ban状态检测
+        if command -v fail2ban-client >/dev/null; then
+            if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● 运行中${NC}"; else F2B_ST="${RED}● 已停止${NC}"; fi
+        else
+            F2B_ST="${YELLOW}● 未安装${NC}"
+        fi
+
+        # 3. WAF状态 (检测是否有站点部署了waf配置)
+        if grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then WAF_ST="${GREEN}● 已部署${NC}"; else WAF_ST="${YELLOW}● 未检测到${NC}"; fi
+
+        # 菜单显示
+        echo -e " 1. 端口防火墙   [$FW_ST]"
+        echo -e " 2. 流量访问控制 (Nginx Layer7)"
+        echo -e " 3. SSH防暴力破解 [$F2B_ST]"
+        echo -e " 4. 网站防火墙    [$WAF_ST]"
+        echo -e " 5. HTTPS证书管理"
+        echo -e " 6. 防盗链设置"
+        echo " 0. 返回主菜单"
+        echo "--------------------------"
+        read -p "请输入选项 [0-6]: " s
+        case $s in 
+            0) return;; 
+            1) port_manager;; 
+            2) traffic_manager;; 
+            3) fail2ban_manager;; 
+            4) waf_manager;; 
+            5) cert_management;; 
+            6) manage_hotlink;; 
+        esac
+    done 
+}
+
 function telegram_manager() {
     while true; do
         clear; echo -e "${YELLOW}=== 🤖 Telegram 机器人管理 ===${NC}"
@@ -159,7 +205,7 @@ function telegram_manager() {
         if [ -f "$MONITOR_PID" ] && kill -0 $(cat "$MONITOR_PID") 2>/dev/null; then M_STAT="${GREEN}运行中${NC}"; else M_STAT="${RED}未启动${NC}"; fi
         if [ -f "$LISTENER_PID" ] && kill -0 $(cat "$LISTENER_PID") 2>/dev/null; then L_STAT="${GREEN}运行中${NC}"; else L_STAT="${RED}未启动${NC}"; fi
         
-        echo -e "Token: ${TG_BOT_TOKEN:0:5}*** | ChatID: $TG_CHAT_ID"
+        echo -e "配置: Token=${TG_BOT_TOKEN:0:5}*** | ChatID=$TG_CHAT_ID"
         echo -e "守护进程: $M_STAT | 监听进程: $L_STAT"
         echo "--------------------------"
         echo " 1. 配置 Token 和 ChatID"
@@ -350,30 +396,6 @@ function traffic_manager() {
             1|2) tp="deny"; [ "$t" == "2" ] && tp="allow"; read -p "IP: " i; echo "$tp $i;" >> "$FW_DIR/access.conf"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
             3) read -p "国家代码(cn): " c; wget -qO- "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" | while read l; do echo "deny $l;" >> "$FW_DIR/geo.conf"; done; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
             4) echo "">"$FW_DIR/access.conf"; echo "">"$FW_DIR/geo.conf"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
-        esac
-    done 
-}
-
-function security_center() { 
-    while true; do 
-        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 ===${NC}"
-        echo " 1. 端口防火墙 (系统层)"
-        echo " 2. 流量访问控制 (Nginx层)"
-        echo " 3. SSH 防暴破 (Fail2Ban)"
-        echo " 4. 网站防火墙 (WAF)"
-        echo " 5. HTTPS 证书管理"
-        echo " 6. 防盗链设置"
-        echo " 0. 返回主菜单"
-        echo "--------------------------"
-        read -p "请输入选项 [0-6]: " s
-        case $s in 
-            0) return;; 
-            1) port_manager;; 
-            2) traffic_manager;; 
-            3) fail2ban_manager;; 
-            4) waf_manager;; 
-            5) cert_management;; 
-            6) manage_hotlink;; 
         esac
     done 
 }
