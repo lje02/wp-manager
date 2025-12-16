@@ -323,7 +323,7 @@ function component_manager() {
 function fail2ban_manager() { 
     while true; do 
         clear; echo -e "${YELLOW}=== 👮 Fail2Ban 防护专家 ===${NC}"
-        echo " 1. 安装/重置 (5次封24h)"
+        echo " 1. 安装/重置 (3次封24h)"
         echo " 2. 查看被封禁 IP"
         echo " 3. 解封指定 IP"
         echo " 0. 返回上一级"
@@ -335,7 +335,7 @@ function fail2ban_manager() {
 [DEFAULT]
 ignoreip=127.0.0.1/8
 bantime=86400
-maxretry=5
+maxretry=3
 [sshd]
 enabled=true
 port=ssh
@@ -396,7 +396,7 @@ function port_manager() {
         echo " 1. 查看开放端口"
         echo " 2. 开放/关闭 端口 (支持多端口)"
         echo " 3. 防 DOS 攻击 (开启/关闭)"
-        echo " 4. 一键全开 / 一键全锁"
+        echo " 4. 一键全开 / 一键全关"
         echo " 0. 返回上一级"
         echo "--------------------------"
         read -p "请输入选项 [0-4]: " f
@@ -405,7 +405,7 @@ function port_manager() {
             1) if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi; pause_prompt;; 
             2) read -p "输入端口 (如 80 443): " ports; echo "1.开放 2.关闭"; read -p "选: " a; for p in $ports; do if command -v ufw >/dev/null; then [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp; else ac=$([ "$a" == "1" ] && echo add || echo remove); firewall-cmd --zone=public --${ac}-port=$p/tcp --permanent; fi; done; command -v firewall-cmd >/dev/null && firewall-cmd --reload; echo "完成"; pause_prompt;; 
             3) echo "1.开启防DOS 2.关闭"; read -p "选: " d; if [ "$d" == "1" ]; then echo "limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s; limit_conn_zone \$binary_remote_addr zone=addr:10m;" > "$FW_DIR/dos_zones.conf"; mkdir -p "$GATEWAY_DIR/vhost"; echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker compose up -d >/dev/null 2>&1 && docker exec gateway_proxy nginx -s reload; echo "已开启"; else rm -f "$FW_DIR/dos_zones.conf" "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "已关闭"; fi; pause_prompt;; 
-            4) echo "1.全开 2.全锁"; read -p "选: " m; if [ "$m" == "1" ]; then [ -x "$(command -v ufw)" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted; else if [ -x "$(command -v ufw)" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi; fi; echo "完成"; pause_prompt;; 
+            4) echo "1.全开 2.全关"; read -p "选: " m; if [ "$m" == "1" ]; then [ -x "$(command -v ufw)" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted; else if [ -x "$(command -v ufw)" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi; fi; echo "完成"; pause_prompt;; 
         esac
     done 
 }
@@ -523,7 +523,7 @@ function show_menu() {
     echo -e "${YELLOW}[站点运维]${NC}"
     echo " 4. 查看站点列表"
     echo " 5. 容器状态监控"
-    echo " 6. 销毁指定站点"
+    echo " 6. 删除指定站点"
     echo " 7. 更换网站域名"
     echo " 8. 修复反代配置"
     echo -e " 9. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
@@ -534,8 +534,8 @@ function show_menu() {
     echo " 12. 整站 备份与还原 (智能扫描)"
     echo ""
     echo -e "${RED}[安全与监控]${NC}"
-    echo " 13. 安全防御中心 (防火墙/WAF/证书)"
-    echo " 14. Telegram 通知 (报警/指令)"
+    echo " 13. 安全防御中心 (防火墙/WAF/证书/fail2ban)"
+    echo " 14. Telegram 通知 (报警/查看)"
     echo " 15. 系统资源监控"
     echo " 16. 日志管理系统"
     echo "-----------------------------------------"
