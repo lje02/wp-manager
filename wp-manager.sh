@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V68 (Security-Dashboard)"
+VERSION="V69 (WAF-Ultra)"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
@@ -92,7 +92,7 @@ function send_tg_msg() {
     local msg=$1; if [ -f "$TG_CONF" ]; then source "$TG_CONF"; if [ ! -z "$TG_BOT_TOKEN" ] && [ ! -z "$TG_CHAT_ID" ]; then curl -s -X POST "https://api.telegram.org/bot$TG_BOT_TOKEN/sendMessage" -d chat_id="$TG_CHAT_ID" -d text="$msg" >/dev/null; fi; fi
 }
 
-# --- 后台脚本生成器 ---
+# --- 监控脚本 ---
 function generate_monitor_script() {
 cat > "$MONITOR_SCRIPT" <<EOF
 #!/bin/bash
@@ -152,12 +152,92 @@ chmod +x "$LISTENER_SCRIPT"
 
 # ================= 3. 业务功能函数 =================
 
-# --- 安全防御中心 (V68 重制) ---
+# --- V69 核心更新: 增强型 WAF 管理 ---
+function waf_manager() {
+    while true; do
+        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V69 Ultra) ===${NC}"
+        if grep -r "block_sql_injections" "$SITES_DIR" >/dev/null 2>&1; then 
+            WAF_ST="${GREEN}● 已部署增强版${NC}"
+        elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
+            WAF_ST="${YELLOW}● 旧版规则${NC}"
+        else 
+            WAF_ST="${RED}● 未检测到${NC}"
+        fi
+        echo -e "状态: $WAF_ST"
+        echo "--------------------------"
+        echo " 1. 一键部署/更新 增强版 WAF 规则 (推荐)"
+        echo " 2. 查看当前 WAF 规则内容"
+        echo " 3. 清空所有 WAF 规则 (关闭防护)"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-3]: " o
+        case $o in
+            0) return;;
+            1)
+                echo -e "${BLUE}>>> 正在生成 V69 增强规则集...${NC}"
+                # 生成深度 WAF 规则
+                cat > /tmp/waf_ultra.conf <<EOF
+# --- V69 Ultra WAF Rules ---
+
+# 1. 拦截常见恶意 User-Agent (扫描器/爬虫)
+if (\$http_user_agent ~* (netcrawler|nikto|wikto|sf|sqlmap|bsqlbf|w3af|acunetix|havij|appscan|striker|markers|hunter|nessus|winhttp|loader|miner)) { return 403; }
+
+# 2. 拦截 SQL 注入特征 (Block SQL Injections)
+if (\$query_string ~* "union.*select.*\(") { return 403; }
+if (\$query_string ~* "union.*all.*select") { return 403; }
+if (\$query_string ~* "concat.*\(") { return 403; }
+
+# 3. 拦截文件注入/跨站脚本 (XSS/RFI)
+if (\$query_string ~* "base64_decode\(") { return 403; }
+if (\$query_string ~* "(<|%3C).*script.*(>|%3E)") { return 403; }
+if (\$query_string ~* "GLOBALS(=|\[|\%[0-9A-Z]{0,2})") { return 403; }
+if (\$query_string ~* "_REQUEST(=|\[|\%[0-9A-Z]{0,2})") { return 403; }
+if (\$query_string ~* "eval\(") { return 403; }
+
+# 4. 保护敏感文件和目录
+location ~* /\.(git|svn|hg|env|bak|config|sql|db|key|pem|ssh|ftpconfig) { deny all; return 403; }
+location ~* \.(sql|bak|conf|ini|log|sh|yaml|yml|swp|install|dist)$ { deny all; return 403; }
+location ~* /(wp-config\.php|readme\.html|license\.txt) { deny all; return 403; }
+
+# 5. 拦截非法请求方法
+if (\$request_method !~ ^(GET|POST|HEAD|PUT|DELETE|OPTIONS)$ ) { return 444; }
+EOF
+                count=0
+                echo -e "${BLUE}>>> 正在分发到所有站点...${NC}"
+                for d in "$SITES_DIR"/*; do
+                    if [ -d "$d" ]; then 
+                        cp /tmp/waf_ultra.conf "$d/waf.conf"
+                        cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1
+                        ((count++))
+                        echo -e " - $(basename "$d"): ${GREEN}已更新${NC}"
+                    fi
+                done
+                rm -f /tmp/waf_ultra.conf
+                echo -e "${GREEN}✔ 成功保护 $count 个站点${NC}"; write_log "Deployed V69 WAF rules"; pause_prompt;;
+            
+            2) 
+                echo -e "${CYAN}--- WAF 规则预览 ---${NC}"
+                cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null | head -n 20
+                pause_prompt;;
+            
+            3)
+                read -p "⚠️ 确认清空所有 WAF 规则？(y/n): " c
+                if [ "$c" == "y" ]; then
+                    for d in "$SITES_DIR"/*; do
+                        [ -d "$d" ] && echo "" > "$d/waf.conf" && cd "$d" && docker compose exec -T nginx nginx -s reload
+                    done
+                    echo -e "${RED}✔ WAF 已全部关闭${NC}"; write_log "Disabled WAF"; 
+                fi
+                pause_prompt;;
+        esac
+    done
+}
+
 function security_center() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (Dashboard) ===${NC}"
         
-        # 1. 防火墙状态检测
+        # 状态检测
         if command -v ufw >/dev/null; then
             if ufw status | grep -q "active"; then FW_ST="${GREEN}● 运行中 (UFW)${NC}"; else FW_ST="${RED}● 未启动${NC}"; fi
         elif command -v firewall-cmd >/dev/null; then
@@ -166,17 +246,18 @@ function security_center() {
             FW_ST="${YELLOW}● 未安装${NC}"
         fi
 
-        # 2. Fail2Ban状态检测
         if command -v fail2ban-client >/dev/null; then
             if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● 运行中${NC}"; else F2B_ST="${RED}● 已停止${NC}"; fi
         else
             F2B_ST="${YELLOW}● 未安装${NC}"
         fi
 
-        # 3. WAF状态 (检测是否有站点部署了waf配置)
-        if grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then WAF_ST="${GREEN}● 已部署${NC}"; else WAF_ST="${YELLOW}● 未检测到${NC}"; fi
+        if grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
+            if grep -r "block_sql_injections" "$SITES_DIR" >/dev/null 2>&1; then WAF_ST="${GREEN}● 已部署 (V69)${NC}"; else WAF_ST="${YELLOW}● 已部署 (旧版)${NC}"; fi
+        else 
+            WAF_ST="${RED}● 未部署${NC}"
+        fi
 
-        # 菜单显示
         echo -e " 1. 端口防火墙   [$FW_ST]"
         echo -e " 2. 流量访问控制 (Nginx Layer7)"
         echo -e " 3. SSH防暴力破解 [$F2B_ST]"
@@ -332,27 +413,6 @@ EOF
             systemctl enable fail2ban; systemctl restart fail2ban; echo "配置完成"; pause_prompt;; 
             2) fail2ban-client status sshd 2>/dev/null|grep Banned; pause_prompt;; 
             3) read -p "输入 IP: " i; fail2ban-client set sshd unbanip $i; echo "已解封"; pause_prompt;; 
-        esac
-    done 
-}
-
-function waf_manager() { 
-    while true; do 
-        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 ===${NC}"
-        echo " 1. 部署增强规则"
-        echo " 2. 查看当前规则"
-        echo " 0. 返回上一级"
-        echo "--------------------------"
-        read -p "请输入选项 [0-2]: " o
-        case $o in 
-            0) return;; 
-            1) cat >/tmp/w <<EOF
-location ~* /\.(git|svn|env|sql|db) { deny all; return 403; }
-if (\$query_string ~* "(union.*select|eval\(|base64_)") { return 403; }
-if (\$http_user_agent ~* (scan|sqlmap|nikto)) { return 403; }
-EOF
-            for d in "$SITES_DIR"/*; do [ -d "$d" ] && cp /tmp/w "$d/waf.conf" && cd "$d" && docker compose exec -T nginx nginx -s reload; done; rm /tmp/w; echo "部署完成"; pause_prompt;; 
-            2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null|head -5; pause_prompt;; 
         esac
     done 
 }
