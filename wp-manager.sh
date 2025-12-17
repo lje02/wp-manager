@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9 (快捷指令: webe)"
+VERSION="V9 (快捷指令: web)"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
