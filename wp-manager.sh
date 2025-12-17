@@ -641,14 +641,23 @@ function install_app() {
     # 列出 library 下的所有文件夹作为应用列表
     i=1
     apps=()
-    for app in "$LIB_DIR"/*; do
+      for app in "$LIB_DIR"/*; do
         if [ -d "$app" ]; then
-            app_name=$(basename "$app")
-            echo "$i. $app_name"
-            apps[i]=$app_name
+            folder_name=$(basename "$app")
+            
+            # 检查有没有 name.txt，有就读中文名，没有就用英文名
+            if [ -f "$app/name.txt" ]; then
+                display_name=$(cat "$app/name.txt")
+            else
+                display_name=$folder_name
+            fi
+            
+            echo "$i. $display_name"
+            apps[i]=$folder_name
             ((i++))
         fi
     done
+    # =====================
     
     echo "0. 返回"
     echo "--------------------------"
@@ -810,6 +819,4 @@ while true; do
         0) exit 0;; 
     esac
 done
-
-
 
