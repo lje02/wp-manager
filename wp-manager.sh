@@ -599,6 +599,99 @@ networks: {proxy-net: {external: true}}
 EOF
     cd "$sdir" && docker compose up -d; check_ssl_status "$fd"; write_log "Created site $fd"
 }
+# ================= 通用应用商店逻辑 =================
+
+# 定义应用库路径
+LIB_DIR="$BASE_DIR/library"
+
+# 1. 初始化应用库（如果没有，自动创建示例）
+function init_library() {
+    if [ ! -d "$LIB_DIR" ]; then
+        mkdir -p "$LIB_DIR/uptime-kuma"
+        # 生成一个示例模板：Uptime Kuma
+        cat > "$LIB_DIR/uptime-kuma/docker-compose.yml" <<EOF
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: {{APP_ID}}_kuma
+    restart: always
+    volumes:
+      - ./data:/app/data
+    environment:
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=3001
+    networks:
+      - proxy-net
+networks:
+  proxy-net:
+    external: true
+EOF
+        echo "应用库初始化完成"
+    fi
+}
+
+# 2. 通用安装函数
+function install_app() {
+    init_library
+    clear
+    echo -e "${YELLOW}=== 📦 Docker 应用商店 ===${NC}"
+    
+    # 列出 library 下的所有文件夹作为应用列表
+    i=1
+    apps=()
+    for app in "$LIB_DIR"/*; do
+        if [ -d "$app" ]; then
+            app_name=$(basename "$app")
+            echo "$i. $app_name"
+            apps[i]=$app_name
+            ((i++))
+        fi
+    done
+    
+    echo "0. 返回"
+    echo "--------------------------"
+    read -p "请选择要安装的应用: " choice
+    
+    if [ "$choice" == "0" ] || [ -z "${apps[$choice]}" ]; then return; fi
+    
+    TARGET_APP=${apps[$choice]}
+    echo -e "正在安装: ${CYAN}$TARGET_APP${NC}"
+    
+    # 获取用户输入
+    read -p "请输入绑定域名: " domain
+    read -p "请输入邮箱 (用于SSL): " email
+    
+    # 检查域名目录是否存在
+    SITE_PATH="$SITES_DIR/$domain"
+    if [ -d "$SITE_PATH" ]; then
+        echo -e "${RED}错误: 该域名的站点已存在！${NC}"
+        pause_prompt
+        return
+    fi
+    
+    # === 核心逻辑 ===
+    # 1. 复制模板
+    mkdir -p "$SITE_PATH"
+    cp -r "$LIB_DIR/$TARGET_APP/"* "$SITE_PATH/"
+    
+    # 2. 替换占位符 (AppID, Domain, Email)
+    # 生成一个唯一的 APP_ID (比如用域名去掉点) 以防止容器名冲突
+    APP_ID=${domain//./_}
+    
+    # 批量替换 docker-compose.yml 中的变量
+    sed -i "s|{{DOMAIN}}|$domain|g" "$SITE_PATH/docker-compose.yml"
+    sed -i "s|{{EMAIL}}|$email|g" "$SITE_PATH/docker-compose.yml"
+    sed -i "s|{{APP_ID}}|$APP_ID|g" "$SITE_PATH/docker-compose.yml"
+    
+    # 3. 启动
+    echo -e "${YELLOW}正在启动容器...${NC}"
+    cd "$SITE_PATH" && docker compose up -d
+    
+    check_ssl_status "$domain"
+    write_log "Installed App $TARGET_APP for $domain"
+}
 function create_proxy() {
     read -p "1. 域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
     echo -e "1.URL 2.IP:端口"; read -p "类型: " t; if [ "$t" == "2" ]; then read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"; read -p "端口: " p; tu="http://$ip:$p"; pm="2"; else read -p "URL: " tu; tu=$(normalize_url "$tu"); echo "1.镜像 2.代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"; fi
@@ -659,26 +752,27 @@ function show_menu() {
     echo " 1. 部署 WordPress 新站"
     echo " 2. 新建 反向代理 (IP:端口 / 域名)"
     echo " 3. 新建 域名重定向 (301)"
+    echo -e " 4. ${CYAN}应用商店 (一键部署其他应用)${NC}"
     echo ""
     echo -e "${YELLOW}[站点运维]${NC}"
-    echo " 4. 查看站点列表"
-    echo " 5. 容器状态监控"
-    echo " 6. 删除指定站点"
-    echo " 7. 更换网站域名"
-    echo " 8. 修复反代配置"
-    echo -e " 9. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
-    echo " 10. 解除上传限制 (一键扩容)"
-    echo -e " 11. ${GREEN}WP-CLI 瑞士军刀 (重置密码/插件)${NC}"
+    echo " 5. 查看站点列表"
+    echo " 6. 容器状态监控"
+    echo " 7. 删除指定站点"
+    echo " 8. 更换网站域名"
+    echo " 9. 修复反代配置"
+    echo -e " 10. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
+    echo " 11. 解除上传限制 (一键扩容)"
+    echo -e " 12. ${GREEN}WP-CLI 瑞士军刀 (重置密码/插件)${NC}"
     echo ""
     echo -e "${YELLOW}[数据管理]${NC}"
-    echo " 12. 数据库 导出/导入"
-    echo " 13. 整站 备份与还原 (智能扫描)"
+    echo " 13. 数据库 导出/导入"
+    echo " 14. 整站 备份与还原 (智能扫描)"
     echo ""
     echo -e "${RED}[安全与监控]${NC}"
-    echo -e " 14. 安全防御中心 ${GREEN}(含主机审计/挖矿检测)${NC}" # Updated text
-    echo " 15. Telegram 通知 (报警/查看)"
-    echo " 16. 系统资源监控"
-    echo " 17. 日志管理系统"
+    echo -e " 15. 安全防御中心 ${GREEN}(含主机审计/挖矿检测)${NC}" # Updated text
+    echo " 16. Telegram 通知 (报警/查看)"
+    echo " 17. 系统资源监控"
+    echo " 18. 日志管理系统"
     echo "-----------------------------------------"
     echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载${NC} | 0. 退出"
     echo -n "请选择: "
@@ -696,24 +790,26 @@ while true; do
         u|U) update_script;; 
         1) create_site;; 
         2) create_proxy;; 
-        3) create_redirect;; 
-        4) list_sites;; 
-        5) container_ops;; 
-        6) delete_site;; 
-        7) change_domain;; 
-        8) repair_proxy;; 
-        9) component_manager;; 
-        10) fix_upload_limit;; 
-        11) wp_toolbox;; 
-        12) db_manager;; 
-        13) backup_restore_ops;; 
-        14) security_center;; 
-        15) telegram_manager;; 
-        16) sys_monitor;; 
-        17) log_manager;; 
+        3) create_redirect;;
+        4) install_app;;
+        5) list_sites;; 
+        6) container_ops;; 
+        7) delete_site;; 
+        8) change_domain;; 
+        9) repair_proxy;; 
+        10) component_manager;; 
+        11) fix_upload_limit;; 
+        12) wp_toolbox;; 
+        13) db_manager;; 
+        14) backup_restore_ops;; 
+        15) security_center;; 
+        16) telegram_manager;; 
+        17) sys_monitor;; 
+        18) log_manager;; 
         x|X) uninstall_cluster;; 
         0) exit 0;; 
     esac
 done
+
 
 
