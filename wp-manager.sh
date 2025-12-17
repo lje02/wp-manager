@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V72 (GitHub-Source-Enhanced)"
+VERSION="V8"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
@@ -18,7 +18,7 @@ LISTENER_SCRIPT="$BASE_DIR/tg_listener.sh"
 BACKUP_KEY_FILE="$BASE_DIR/backup.key"
 ENCRYPT_KEY=""
 
-# [V72 更新] 自动更新源 (GitHub Raw 链接)
+# [V8 更新] 自动更新源 (GitHub Raw 链接)
 UPDATE_URL="https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh"
 
 # 颜色定义
@@ -4682,3 +4682,4 @@ while true; do
             ;;
     esac
 done
+
