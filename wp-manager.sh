@@ -497,17 +497,57 @@ while true; do
         if [ "\$sender_id" == "\$TG_CHAT_ID" ]; then
             case "\$message_text" in
                 "/status"|"/状态")
-                    cpu_load=\$(uptime | awk -F'load average:' '{print \$2}')
-                    mem_usage=\$(free -h | grep Mem | awk '{print \$3 "/" \$2 " (" \$3/\$2*100 "% )"}')
-                    disk_usage=\$(df -h / | awk 'NR==2 {print \$3 "/" \$2 " (" \$5 ")"}')
-                    ip=\$(curl -s4 ifconfig.me)
-                    container_count=\$(docker ps -q | wc -l)
+                    # 更稳定的系统信息获取方式
+                    # CPU负载
+                    cpu_load=\$(uptime 2>/dev/null | awk -F'load average:' '{print \$2}' | sed 's/^[ \t]*//;s/[ \t]*\$//' || echo "未知")
+                    if [ -z "\$cpu_load" ]; then
+                        cpu_load=\$(cat /proc/loadavg 2>/dev/null | awk '{print \$1,\$2,\$3}' || echo "未知")
+                    fi
                     
-                    reply "📊 **系统状态**
-💻 IP: \$ip
+                    # 内存使用
+                    if command -v free >/dev/null 2>&1; then
+                        mem_total=\$(free -m | awk '/^Mem:/{print \$2}')
+                        mem_used=\$(free -m | awk '/^Mem:/{print \$3}')
+                        mem_percent=\$(awk "BEGIN {printf \"%.1f\", \$mem_used/\$mem_total*100}")
+                        mem_info="\${mem_used}M/\${mem_total}M (\${mem_percent}%)"
+                    else
+                        mem_info="未知"
+                    fi
+                    
+                    # 磁盘使用
+                    if command -v df >/dev/null 2>&1; then
+                        disk_info=\$(df -h / 2>/dev/null | awk 'NR==2 {print \$3 "/" \$2 " (" \$5 ")"}' || echo "未知")
+                    else
+                        disk_info="未知"
+                    fi
+                    
+                    # IP地址（使用更可靠的方法）
+                    ip=\$(curl -s --connect-timeout 5 http://ipinfo.io/ip 2>/dev/null || \
+                         curl -s --connect-timeout 5 http://ifconfig.me 2>/dev/null || \
+                         curl -s --connect-timeout 5 http://icanhazip.com 2>/dev/null || \
+                         echo "获取失败")
+                    
+                    # 容器数量
+                    container_count=\$(docker ps -q 2>/dev/null | wc -l || echo "0")
+                    
+                    # 系统时间
+                    sys_time=\$(date '+%Y-%m-%d %H:%M:%S')
+                    
+                    # 系统运行时间
+                    uptime_info=\$(uptime -p 2>/dev/null | sed 's/up //' || echo "未知")
+                    
+                    # 网络连接数
+                    conn_count=\$(netstat -an 2>/dev/null | grep ESTABLISHED | wc -l || echo "0")
+                    
+                    reply "📊 *系统状态报告*
+⏰ 时间: \$sys_time
+🖥️ 主机: \$(hostname)
+🌐 IP: \$ip
+⏱️ 运行: \$uptime_info
 🧠 负载: \$cpu_load
-💾 内存: \$mem_usage
-💿 磁盘: \$disk_usage
+💾 内存: \$mem_info
+💿 磁盘: \$disk_info
+🔗 连接: \$conn_count 个
 🐳 容器: \$container_count 个运行中"
                     ;;
                     
@@ -3359,20 +3399,22 @@ function cert_management() {
         # 显示证书统计
         local cert_count=0
         if docker ps --format '{{.Names}}' | grep -q "^gateway_acme$"; then
-            cert_count=$(docker exec gateway_acme ls -1 /etc/nginx/certs/*.crt 2>/dev/null | wc -l)
+            # 使用更可靠的方式统计证书
+            cert_count=$(docker exec gateway_acme sh -c 'ls -1 /etc/nginx/certs/*.crt 2>/dev/null | wc -l' 2>/dev/null || echo 0)
         fi
         
         echo -e "证书总数: $cert_count"
         echo "--------------------------"
-        echo " 1. 查看证书列表"
+        echo " 1. 查看证书列表 (详细)"
         echo " 2. 上传自定义证书"
         echo " 3. 重置证书 (重新申请)"
         echo " 4. 强制续签证书"
         echo " 5. 删除证书"
-        echo " 6. 证书监控"
+        echo " 6. 证书监控 (检查过期时间)"
+        echo " 7. 诊断证书问题"
         echo " 0. 返回上一级"
         echo "--------------------------"
-        read -p "请输入选项 [0-6]: " c
+        read -p "请输入选项 [0-7]: " c
         
         case $c in 
             0) 
@@ -3382,104 +3424,48 @@ function cert_management() {
             1) 
                 echo -e "${CYAN}>>> 证书列表${NC}"
                 if docker ps --format '{{.Names}}' | grep -q "^gateway_acme$"; then
-                    docker exec gateway_acme ls -lh /etc/nginx/certs/*.crt 2>/dev/null | \
-                    awk '{
-                        split($9, a, "/");
-                        split(a[5], b, ".");
-                        printf "域名: %-30s 大小: %-10s 修改时间: %s %s\n", b[1], $5, $6, $7
-                    }' || echo "暂无证书"
+                    echo -e "正在检查证书..."
+                    # 尝试多种路径
+                    local cert_paths=(
+                        "/etc/nginx/certs"
+                        "/etc/acme.sh"
+                        "/app/letsencrypt/live"
+                    )
+                    
+                    for path in "${cert_paths[@]}"; do
+                        echo -e "\n检查路径: $path"
+                        docker exec gateway_acme find "$path" -name "*.crt" -o -name "*.pem" 2>/dev/null | head -10
+                    done
+                    
+                    echo -e "\n${CYAN}主要证书目录:${NC}"
+                    docker exec gateway_acme ls -la /etc/nginx/certs/ 2>/dev/null || echo "无法访问证书目录"
                 else
                     echo -e "${RED}❌ ACME容器未运行${NC}"
+                    echo -e "请检查网关状态: docker ps | grep gateway"
                 fi
                 pause_prompt
                 ;; 
                 
-            2) 
-                ls -1 "$SITES_DIR"
-                read -p "域名: " d
+            7)
+                echo -e "${CYAN}>>> 诊断证书问题${NC}"
+                echo -e "1. 检查acme-companion容器状态..."
+                docker ps | grep gateway_acme
                 
-                if [ ! -d "$SITES_DIR/$d" ]; then
-                    echo -e "${RED}❌ 站点不存在${NC}"
-                    pause_prompt
-                    continue
-                fi
+                echo -e "\n2. 检查nginx-proxy容器状态..."
+                docker ps | grep gateway_proxy
                 
-                read -p "证书文件路径 (.crt): " cert_file
-                read -p "私钥文件路径 (.key): " key_file
+                echo -e "\n3. 检查容器日志（最近5行）..."
+                docker logs gateway_acme --tail 5 2>/dev/null
                 
-                if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-                    echo -e "${RED}❌ 证书文件不存在${NC}"
-                    pause_prompt
-                    continue
-                fi
+                echo -e "\n4. 检查证书挂载..."
+                docker inspect gateway_acme --format='{{range .Mounts}}{{printf "%-30s -> %s\n" .Source .Destination}}{{end}}' | grep -i cert
                 
-                # 复制证书到容器
-                docker cp "$cert_file" gateway_acme:"/etc/nginx/certs/$d.crt"
-                docker cp "$key_file" gateway_acme:"/etc/nginx/certs/$d.key"
-                
-                # 重载nginx
-                docker exec gateway_proxy nginx -s reload
-                
-                echo -e "${GREEN}✔ 证书上传成功${NC}"
-                write_log "Uploaded custom cert for $d"
-                pause_prompt
-                ;; 
-                
-            3) 
-                read -p "域名: " d
-                
-                # 删除旧证书
-                docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key" 2>/dev/null
-                
-                # 重启acme容器重新申请
-                docker restart gateway_acme
-                
-                echo -e "${GREEN}✔ 证书已重置，正在重新申请...${NC}"
-                echo -e "请等待1-5分钟，然后访问: https://$d"
-                write_log "Reset cert for $d"
-                pause_prompt
-                ;; 
-                
-            4) 
-                echo -e "${CYAN}>>> 强制续签证书${NC}"
-                docker exec gateway_acme /app/force_renew 2>/dev/null
-                
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}✔ 证书续签任务已触发${NC}"
-                    echo -e "续签可能需要几分钟时间"
-                else
-                    echo -e "${RED}❌ 续签失败${NC}"
-                fi
-                pause_prompt
-                ;; 
-                
-            5)
-                read -p "域名: " d
-                
-                echo -e "${RED}⚠️ 确认删除 $d 的证书? (y/n): ${NC}"
-                read confirm
-                
-                if [ "$confirm" == "y" ]; then
-                    docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key" 2>/dev/null
-                    docker exec gateway_proxy nginx -s reload
-                    echo -e "${GREEN}✔ 证书已删除${NC}"
-                    write_log "Deleted cert for $d"
-                fi
-                pause_prompt
-                ;;
-                
-            6)
-                echo -e "${CYAN}>>> 证书监控${NC}"
-                echo -e "检查证书过期时间..."
-                
-                if docker ps --format '{{.Names}}' | grep -q "^gateway_acme$"; then
-                    docker exec gateway_acme find /etc/nginx/certs -name "*.crt" -exec bash -c '
-                        echo "检查: $1"
-                        openssl x509 -enddate -noout -in "$1" 2>/dev/null | cut -d= -f2
-                        echo ""
-                    ' _ {} \;
-                else
-                    echo -e "${RED}❌ ACME容器未运行${NC}"
+                echo -e "\n5. 测试手动创建证书..."
+                read -p "域名: " test_domain
+                echo -e "测试命令: docker exec gateway_acme /app/force_renew"
+                read -p "执行? (y/n): " exec_test
+                if [ "$exec_test" == "y" ]; then
+                    docker exec gateway_acme /app/force_renew
                 fi
                 pause_prompt
                 ;;
@@ -4052,7 +4038,7 @@ function backup_restore_ops() {
         
         echo "--------------------------"
         echo " 1. 备份站点"
-        echo " 2. 恢复站点"
+        echo " 2. 恢复站点 (自动扫描最新备份)"
         echo " 3. 管理备份文件"
         echo " 4. 自动备份设置"
         echo " 0. 返回上一级"
@@ -4064,101 +4050,129 @@ function backup_restore_ops() {
                 return
                 ;; 
                 
-            1) 
-                echo -e "${CYAN}>>> 备份站点${NC}"
+            2) 
+                echo -e "${CYAN}>>> 恢复站点 (智能模式)${NC}"
                 
-                # 列出站点
-                if [ ! -d "$SITES_DIR" ] || [ -z "$(ls -A $SITES_DIR 2>/dev/null)" ]; then
-                    echo -e "${YELLOW}暂无站点${NC}"
+                # 列出所有站点目录（包括有备份的）
+                echo -e "${YELLOW}可用站点:${NC}"
+                
+                # 先列出已有站点的目录
+                if [ -d "$SITES_DIR" ] && [ -n "$(ls -A $SITES_DIR 2>/dev/null)" ]; then
+                    echo -e "${GREEN}[现有站点]${NC}"
+                    ls -1 "$SITES_DIR"
+                    echo ""
+                fi
+                
+                # 列出有备份的站点（即使站点目录可能已删除）
+                if [ -d "$BASE_DIR/backups" ] && [ -n "$(ls -A $BASE_DIR/backups 2>/dev/null)" ]; then
+                    echo -e "${YELLOW}[有备份的站点]${NC}"
+                    find "$BASE_DIR/backups" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | \
+                        xargs -I {} basename {} | sort
+                    echo ""
+                fi
+                
+                read -p "输入要恢复的域名: " restore_site
+                
+                if [ -z "$restore_site" ]; then
+                    echo -e "${RED}❌ 域名不能为空${NC}"
                     pause_prompt
                     continue
                 fi
                 
-                echo -e "${CYAN}可用站点:${NC}"
-                ls -1 "$SITES_DIR"
-                echo ""
-                read -p "域名 (留空备份所有): " backup_domain
+                # 查找该站点的备份目录
+                local backup_dir="$BASE_DIR/backups/$restore_site"
                 
-                local backup_timestamp=$(date +%Y%m%d_%H%M%S)
-                
-                if [ -z "$backup_domain" ]; then
-                    # 备份所有站点
-                    echo -e "${CYAN}>>> 备份所有站点...${NC}"
+                if [ ! -d "$backup_dir" ]; then
+                    echo -e "${YELLOW}⚠️ 正在搜索备份文件...${NC}"
+                    # 尝试在备份根目录查找
+                    backup_files=$(find "$BASE_DIR/backups" -name "*${restore_site}*.tar.gz" -o -name "*${restore_site}*.tar.gz.gpg" 2>/dev/null | head -5)
                     
-                    local total_backup=0
-                    for d in "$SITES_DIR"/*; do
-                        if [ -d "$d" ]; then
-                            site_name=$(basename "$d")
-                            echo -e "\n备份: $site_name"
-                            
-                            if backup_single_site "$site_name" "$backup_timestamp"; then
-                                ((total_backup++))
-                            fi
-                        fi
-                    done
-                    
-                    echo -e "\n${GREEN}✔ 备份完成: $total_backup 个站点${NC}"
-                    
-                else
-                    # 备份单个站点
-                    if [ ! -d "$SITES_DIR/$backup_domain" ]; then
-                        echo -e "${RED}❌ 站点不存在${NC}"
+                    if [ -z "$backup_files" ]; then
+                        echo -e "${RED}❌ 找不到该站点的备份${NC}"
                         pause_prompt
                         continue
                     fi
                     
-                    backup_single_site "$backup_domain" "$backup_timestamp"
+                    echo -e "${CYAN}找到以下备份文件:${NC}"
+                    select backup_file in $backup_files; do
+                        if [ -n "$backup_file" ]; then
+                            # 从文件名提取站点名
+                            local site_name=$(basename "$backup_file" | sed 's/_[0-9]*_.*//')
+                            restore_single_site "$backup_file" "$site_name"
+                            break
+                        else
+                            echo -e "${RED}❌ 无效选择${NC}"
+                        fi
+                    done < /dev/tty
+                    
+                    pause_prompt
+                    continue
                 fi
                 
-                pause_prompt
-                ;; 
+                # 显示该站点的备份列表（按时间倒序）
+                echo -e "${CYAN}>>> $restore_site 的备份列表${NC}"
                 
-            2) 
-                echo -e "${CYAN}>>> 恢复站点${NC}"
+                local backup_list=$(find "$backup_dir" -name "*.tar.gz" -o -name "*.tar.gz.gpg" 2>/dev/null | \
+                    xargs -I {} sh -c 'echo "$(basename {}) $(stat -c %Y {} | xargs -I{} date -d @{} "+%Y-%m-%d %H:%M:%S") {}"' | \
+                    sort -k2 -r | head -10)
+                
+                if [ -z "$backup_list" ]; then
+                    echo -e "${RED}❌ 该站点没有备份文件${NC}"
+                    pause_prompt
+                    continue
+                fi
                 
                 # 显示备份列表
-                if [ ! -d "$BASE_DIR/backups" ] || [ -z "$(ls -A $BASE_DIR/backups 2>/dev/null)" ]; then
-                    echo -e "${YELLOW}暂无备份${NC}"
-                    pause_prompt
-                    continue
-                fi
-                
-                echo -e "${CYAN}可用备份:${NC}"
-                find "$BASE_DIR/backups" -name "*.tar.gz" -o -name "*.tar.gz.gpg" 2>/dev/null | \
-                xargs -I {} basename {} | \
-                sort -r | head -20
+                echo -e "${GREEN}最新备份:${NC}"
+                local count=1
+                local backup_array=()
+                echo "$backup_list" | while read -r backup_name backup_time full_path; do
+                    backup_size=$(du -h "$full_path" | cut -f1)
+                    echo "$count. $backup_name - $backup_time ($backup_size)"
+                    backup_array[$count]="$full_path"
+                    ((count++))
+                done
                 
                 echo ""
-                read -p "备份文件名: " backup_file
+                echo "0. 返回"
+                echo "--------------------------"
+                read -p "选择备份文件编号 (默认1): " backup_choice
                 
-                local full_backup_path=$(find "$BASE_DIR/backups" -name "$backup_file" 2>/dev/null)
-                
-                if [ -z "$full_backup_path" ] || [ ! -f "$full_backup_path" ]; then
-                    echo -e "${RED}❌ 备份文件不存在${NC}"
-                    pause_prompt
-                    continue
-                fi
-                
-                # 提取备份信息
-                local backup_name=$(basename "$backup_file")
-                local site_name=$(echo "$backup_name" | cut -d_ -f1)
-                local backup_date=$(echo "$backup_name" | cut -d_ -f2- | sed 's/\.tar\.gz.*//')
-                
-                echo -e "\n${CYAN}备份信息:${NC}"
-                echo -e "站点: $site_name"
-                echo -e "时间: $backup_date"
-                echo -e "文件: $backup_file"
-                
-                read -p "确认恢复? (y/n): " confirm
-                
-                if [ "$confirm" != "y" ]; then
+                if [ -z "$backup_choice" ] || [ "$backup_choice" == "1" ]; then
+                    backup_choice=1
+                elif [ "$backup_choice" == "0" ]; then
                     echo "操作取消"
                     pause_prompt
                     continue
                 fi
                 
-                # 恢复站点
-                restore_single_site "$full_backup_path" "$site_name"
+                # 获取选择的备份文件
+                local selected_backup="${backup_array[$backup_choice]}"
+                
+                if [ -z "$selected_backup" ] || [ ! -f "$selected_backup" ]; then
+                    echo -e "${RED}❌ 无效的选择${NC}"
+                    pause_prompt
+                    continue
+                fi
+                
+                local backup_name=$(basename "$selected_backup")
+                local backup_size=$(du -h "$selected_backup" | cut -f1)
+                local backup_date=$(stat -c %y "$selected_backup" | cut -d' ' -f1)
+                
+                echo -e "\n${CYAN}备份信息:${NC}"
+                echo -e "站点: $restore_site"
+                echo -e "文件: $backup_name"
+                echo -e "大小: $backup_size"
+                echo -e "日期: $backup_date"
+                
+                read -p "确认恢复此备份? (y/n): " confirm
+                
+                if [ "$confirm" == "y" ]; then
+                    # 恢复站点
+                    restore_single_site "$selected_backup" "$restore_site"
+                else
+                    echo "操作取消"
+                fi
                 pause_prompt
                 ;; 
                 
@@ -4574,7 +4588,7 @@ function show_menu() {
     echo -e "${YELLOW}[站点运维]${NC}"
     echo " 4. 查看站点列表"
     echo " 5. 容器状态监控"
-    echo " 6. 销毁指定站点"
+    echo " 6. 删除指定站点"
     echo " 7. 更换网站域名"
     echo " 8. 修复反代配置"
     echo -e " 9. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
