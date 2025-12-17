@@ -452,7 +452,7 @@ function component_manager() {
 function fail2ban_manager() { 
     while true; do 
         clear; echo -e "${YELLOW}=== 👮 Fail2Ban 防护专家 ===${NC}"
-        echo " 1. 安装/重置 (5次封24h)"
+        echo " 1. 安装/重置 (3次封24h)"
         echo " 2. 查看被封禁 IP"
         echo " 3. 解封指定 IP"
         echo " 0. 返回上一级"
@@ -464,7 +464,7 @@ function fail2ban_manager() {
 [DEFAULT]
 ignoreip=127.0.0.1/8
 bantime=86400
-maxretry=5
+maxretry=3
 [sshd]
 enabled=true
 port=ssh
@@ -715,4 +715,5 @@ while true; do
         0) exit 0;; 
     esac
 done
+
 
