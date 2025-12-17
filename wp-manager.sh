@@ -2,10 +2,12 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V8"
+VERSION="V9 (Shortcut: web)"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
+
+# 子目录定义
 SITES_DIR="$BASE_DIR/sites"
 GATEWAY_DIR="$BASE_DIR/gateway"
 FW_DIR="$BASE_DIR/firewall"
@@ -16,7 +18,7 @@ MONITOR_SCRIPT="$BASE_DIR/monitor_daemon.sh"
 LISTENER_PID="$BASE_DIR/tg_listener.pid"
 LISTENER_SCRIPT="$BASE_DIR/tg_listener.sh"
 
-# 自动更新源 (GitHub Raw 链接)
+# 自动更新源
 UPDATE_URL="https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh"
 
 # 颜色定义
@@ -43,10 +45,12 @@ function pause_prompt() {
     read -r
 }
 
+# [修改点] 快捷方式改为 web
 function install_shortcut() {
     local script_path=$(readlink -f "$0")
-    if [ ! -L "/usr/bin/wp" ] || [ "$(readlink -f "/usr/bin/wp")" != "$script_path" ]; then
-        ln -sf "$script_path" /usr/bin/wp && chmod +x "$script_path"
+    if [ ! -L "/usr/bin/web" ] || [ "$(readlink -f "/usr/bin/web")" != "$script_path" ]; then
+        ln -sf "$script_path" /usr/bin/web && chmod +x "$script_path"
+        echo -e "${GREEN}>>> 快捷指令 'web' 已安装 (输入 web 即可启动)${NC}"
     fi
 }
 
@@ -58,6 +62,10 @@ function check_dependencies() {
     if ! command -v openssl >/dev/null 2>&1; then
         echo -e "${YELLOW}>>> 正在安装依赖组件 (openssl)...${NC}"
         if [ -f /etc/debian_version ]; then apt-get install -y openssl; else yum install -y openssl; fi
+    fi
+    if ! command -v netstat >/dev/null 2>&1; then
+        echo -e "${YELLOW}>>> 正在安装网络工具 (net-tools)...${NC}"
+        if [ -f /etc/debian_version ]; then apt-get install -y net-tools; else yum install -y net-tools; fi
     fi
     if ! command -v docker >/dev/null 2>&1; then
         echo -e "${YELLOW}>>> 正在安装 Docker...${NC}"
@@ -86,7 +94,7 @@ function normalize_url() {
 
 function update_script() {
     clear; echo -e "${GREEN}=== 脚本自动更新 ===${NC}"; echo -e "版本: $VERSION"; echo -e "源: GitHub (lje02/wp-manager)"
-    temp_file="/tmp/wp_manager_new.sh"
+    temp_file="/tmp/wp_manager_update.sh"
     if curl -f -L -s -o "$temp_file" "$UPDATE_URL" && head -n 1 "$temp_file" | grep -q "/bin/bash"; then
         mv "$temp_file" "$0"; chmod +x "$0"; echo -e "${GREEN}✔ 更新成功，正在重启...${NC}"; write_log "Updated script"; sleep 1; exec "$0"
     else echo -e "${RED}❌ 更新失败! 请检查网络或源地址。${NC}"; rm -f "$temp_file"; fi; pause_prompt
@@ -156,9 +164,80 @@ chmod +x "$LISTENER_SCRIPT"
 
 # ================= 3. 业务功能函数 =================
 
+# [V9] 主机安全审计
+function server_audit() {
+    check_dependencies # 确保有 netstat
+    while true; do
+        clear; echo -e "${YELLOW}=== 🕵️ 主机安全审计 (V9) ===${NC}"
+        
+        echo -e "${CYAN}[1] 端口暴露审计${NC}"
+        echo -e "    检查服务器当前对外开放的端口，防止误开高危端口。"
+        
+        echo -e "${CYAN}[2] 恶意进程/挖矿检测${NC}"
+        echo -e "    检查高 CPU 占用进程、可疑目录(/tmp)运行的程序。"
+        
+        echo "--------------------------"
+        echo " 1. 扫描当前开放端口 (TCP/UDP)"
+        echo " 2. 执行 恶意进程与挖矿 快速扫描"
+        echo " 3. 查看最近登录记录 (last)"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-3]: " o
+        case $o in
+            0) return;;
+            1) 
+                echo -e "\n${GREEN}>>> 正在扫描监听端口...${NC}"
+                echo -e "${YELLOW}注意: 0.0.0.0 或 ::: 表示对全网开放${NC}"
+                echo "--------------------------------------------------------"
+                printf "%-8s %-25s %-15s %-20s\n" "协议" "本地地址:端口" "状态" "进程PID/名称"
+                echo "--------------------------------------------------------"
+                netstat -tunlp | grep LISTEN | awk '{printf "%-8s %-25s %-15s %-20s\n", $1, $4, $6, $7}'
+                echo "--------------------------------------------------------"
+                echo "常见高危端口: 3306(MySQL), 6379(Redis), 22(SSH - 如有弱密码)"
+                pause_prompt;;
+            2)
+                echo -e "\n${GREEN}>>> 正在执行安全扫描...${NC}"
+                
+                # 1. 检查 CPU 占用 Top 5
+                echo -e "\n${CYAN}[Check 1] CPU 占用最高的 5 个进程:${NC}"
+                ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%cpu | head -n 6
+                
+                # 2. 检查可疑目录 (/tmp, /var/tmp, /dev/shm) 下的可执行文件
+                echo -e "\n${CYAN}[Check 2] 检查可疑目录运行的进程 (/tmp, /dev/shm):${NC}"
+                suspicious_found=0
+                # 遍历 /proc 下所有的 pid
+                for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+                    if [ -d "/proc/$pid" ]; then
+                        exe_link=$(readlink -f /proc/$pid/exe 2>/dev/null)
+                        if [[ "$exe_link" == /tmp/* ]] || [[ "$exe_link" == /var/tmp/* ]] || [[ "$exe_link" == /dev/shm/* ]]; then
+                            echo -e "${RED}⚠️  发现可疑进程 PID: $pid${NC}"
+                            echo -e "   路径: $exe_link"
+                            echo -e "   命令: $(cat /proc/$pid/cmdline 2>/dev/null)"
+                            suspicious_found=1
+                        fi
+                    fi
+                done
+                if [ "$suspicious_found" -eq 0 ]; then echo -e "${GREEN}✔ 未发现明显的可疑目录进程${NC}"; fi
+                
+                # 3. 检查文件被删除但仍在运行的进程 (Deleted binary)
+                echo -e "\n${CYAN}[Check 3] 检查已删除但仍在运行的二进制文件:${NC}"
+                deleted_found=0
+                ls -l /proc/*/exe 2>/dev/null | grep '(deleted)' | grep -v "docker" | grep -v "containerd" | while read line; do
+                    echo -e "${YELLOW}⚠️  $line${NC}"
+                    deleted_found=1
+                done
+                
+                echo -e "\n--------------------------"
+                echo -e "提示: 如果发现名为 xmrig, kinsing, masscan 等进程，通常为病毒。"
+                pause_prompt;;
+            3) last | head -n 10; pause_prompt;;
+        esac
+    done
+}
+
 function security_center() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V8) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V9) ===${NC}"
         
         # 1. 防火墙状态
         if command -v ufw >/dev/null; then
@@ -195,9 +274,10 @@ function security_center() {
         echo -e " 4. 网站防火墙    [$WAF_ST]"
         echo -e " 5. HTTPS证书管理"
         echo -e " 6. 防盗链设置"
+        echo -e " 7. ${CYAN}主机安全审计 (扫描/挖矿检测)${NC}"
         echo " 0. 返回主菜单"
         echo "--------------------------"
-        read -p "请输入选项 [0-6]: " s
+        read -p "请输入选项 [0-7]: " s
         case $s in 
             0) return;; 
             1) port_manager;; 
@@ -206,12 +286,13 @@ function security_center() {
             4) waf_manager;; 
             5) cert_management;; 
             6) manage_hotlink;; 
+            7) server_audit;; 
         esac
     done 
 }
 
 function wp_toolbox() {
-    # [V8 新增] WP-CLI 工具箱
+    # WP-CLI 工具箱
     while true; do
         clear; echo -e "${YELLOW}=== 🛠️ WP-CLI 瑞士军刀 ===${NC}"
         ls -1 "$SITES_DIR"; echo "--------------------------"
@@ -556,7 +637,8 @@ server { listen 80; server_name localhost; root /var/www/html; index index.php; 
 EOF
 cd "$s" && docker compose restart nginx; echo "OK";; esac; pause_prompt; done; }
 function backup_restore_ops() { while true; do clear; echo "1.Backup 2.Restore 0.Back"; read -p "Sel: " b; case $b in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; [ ! -d "$s" ] && continue; bd="$s/backups/$(date +%Y%m%d%H%M)"; mkdir -p "$bd"; cd "$s"; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql"; wp_c=$(docker compose ps -q wordpress); docker run --rm --volumes-from $wp_c -v "$bd":/backup alpine tar czf /backup/files.tar.gz /var/www/html/wp-content; cp *.conf docker-compose.yml "$bd/"; echo "Backup: $bd"; write_log "Backup $d"; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; bd="$s/backups"; [ ! -d "$bd" ] && continue; lt=$(ls -t "$bd"|head -1); if [ ! -z "$lt" ]; then echo "最新: $lt"; read -p "使用最新? (y/n): " u; [ "$u" == "y" ] && n="$lt"; fi; if [ -z "$n" ]; then ls -1 "$bd"; read -p "Name: " n; fi; bp="$bd/$n"; [ ! -d "$bp" ] && continue; cd "$s" && docker compose down; vol=$(docker volume ls -q|grep "${d//./_}_wp_data"); docker run --rm -v $vol:/var/www/html -v "$bp":/backup alpine tar xzf /backup/files.tar.gz -C /; docker compose up -d db; sleep 15; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysql -u root -p"$pwd" < "$bp/db.sql"; docker compose up -d; echo "Restored"; write_log "Restored $d"; pause_prompt;; esac; done; }
-function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/wp; echo "已卸载"); }
+# [修改点] 卸载时清理 /usr/bin/web
+function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/web; echo "已卸载"); }
 
 # ================= 4. 菜单显示函数 =================
 function show_menu() {
@@ -584,7 +666,7 @@ function show_menu() {
     echo " 13. 整站 备份与还原 (智能扫描)"
     echo ""
     echo -e "${RED}[安全与监控]${NC}"
-    echo " 14. 安全防御中心 (防火墙/WAF/证书/ssh防爆破)"
+    echo -e " 14. 安全防御中心 ${GREEN}(含主机审计/挖矿检测)${NC}" # Updated text
     echo " 15. Telegram 通知 (报警/查看)"
     echo " 16. 系统资源监控"
     echo " 17. 日志管理系统"
@@ -624,4 +706,3 @@ while true; do
         0) exit 0;; 
     esac
 done
-
