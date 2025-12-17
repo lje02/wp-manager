@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V7"
+VERSION="V8"
 
 # 数据存储路径
 BASE_DIR="/root/wp-cluster"
@@ -16,7 +16,7 @@ MONITOR_SCRIPT="$BASE_DIR/monitor_daemon.sh"
 LISTENER_PID="$BASE_DIR/tg_listener.pid"
 LISTENER_SCRIPT="$BASE_DIR/tg_listener.sh"
 
-# [V7 更新] 自动更新源 (GitHub Raw 链接)
+# 自动更新源 (GitHub Raw 链接)
 UPDATE_URL="https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh"
 
 # 颜色定义
@@ -87,10 +87,9 @@ function normalize_url() {
 function update_script() {
     clear; echo -e "${GREEN}=== 脚本自动更新 ===${NC}"; echo -e "版本: $VERSION"; echo -e "源: GitHub (lje02/wp-manager)"
     temp_file="/tmp/wp_manager_new.sh"
-    # GitHub Raw 通常需要 -L 参数跟随跳转
     if curl -f -L -s -o "$temp_file" "$UPDATE_URL" && head -n 1 "$temp_file" | grep -q "/bin/bash"; then
         mv "$temp_file" "$0"; chmod +x "$0"; echo -e "${GREEN}✔ 更新成功，正在重启...${NC}"; write_log "Updated script"; sleep 1; exec "$0"
-    else echo -e "${RED}❌ 更新失败! 请检查 GitHub 网络连通性或 Raw 地址是否正确。${NC}"; rm -f "$temp_file"; fi; pause_prompt
+    else echo -e "${RED}❌ 更新失败! 请检查网络或源地址。${NC}"; rm -f "$temp_file"; fi; pause_prompt
 }
 
 function send_tg_msg() {
@@ -159,7 +158,7 @@ chmod +x "$LISTENER_SCRIPT"
 
 function security_center() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V71) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V8) ===${NC}"
         
         # 1. 防火墙状态
         if command -v ufw >/dev/null; then
@@ -211,6 +210,55 @@ function security_center() {
     done 
 }
 
+function wp_toolbox() {
+    # [V8 新增] WP-CLI 工具箱
+    while true; do
+        clear; echo -e "${YELLOW}=== 🛠️ WP-CLI 瑞士军刀 ===${NC}"
+        ls -1 "$SITES_DIR"; echo "--------------------------"
+        read -p "请输入要操作的域名 (0返回): " d; [ "$d" == "0" ] && return
+        sdir="$SITES_DIR/$d"
+        if [ ! -d "$sdir" ]; then echo -e "${RED}目录不存在${NC}"; sleep 1; continue; fi
+        
+        # 动态获取容器名
+        if [ -f "$sdir/docker-compose.yml" ]; then
+            container_name=$(grep "container_name: .*_app" "$sdir/docker-compose.yml" | awk '{print $2}')
+        fi
+        
+        if [ -z "$container_name" ]; then echo -e "${RED}无法识别WP容器，请确认是标准WP站点${NC}"; sleep 2; continue; fi
+
+        echo -e "当前操作站点: ${CYAN}$d${NC} (容器: $container_name)"
+        echo "--------------------------"
+        echo " 1. 重置管理员密码 (user=admin)"
+        echo " 2. 列出所有插件"
+        echo " 3. 禁用所有插件 (救砖用)"
+        echo " 4. 清理对象缓存 (Object Cache)"
+        echo " 5. 修复文件权限 (chown www-data)"
+        echo " 6. 替换数据库中的域名 (Search-Replace)"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-6]: " op
+        
+        case $op in
+            0) break;;
+            1) read -p "请输入新密码: " newpass
+               echo -e "${YELLOW}正在重置...${NC}"
+               docker exec -u www-data "$container_name" wp user update admin --user_pass="$newpass"
+               echo -e "${GREEN}✔ 密码已重置${NC}"; pause_prompt;;
+            2) docker exec -u www-data "$container_name" wp plugin list; pause_prompt;;
+            3) docker exec -u www-data "$container_name" wp plugin deactivate --all; echo -e "${GREEN}✔ 所有插件已禁用${NC}"; pause_prompt;;
+            4) docker exec -u www-data "$container_name" wp cache flush; echo -e "${GREEN}✔ 缓存已刷新${NC}"; pause_prompt;;
+            5) echo -e "${YELLOW}正在修复权限 (可能需要几秒)...${NC}"
+               # 需要 root 权限运行 chown
+               docker compose -f "$sdir/docker-compose.yml" exec -T -u root wordpress chown -R www-data:www-data /var/www/html
+               echo -e "${GREEN}✔ 权限已修复 (www-data)${NC}"; pause_prompt;;
+            6) read -p "旧域名: " old_d; read -p "新域名: " new_d
+               echo -e "${YELLOW}正在执行全库替换...${NC}"
+               docker exec -u www-data "$container_name" wp search-replace "$old_d" "$new_d" --all-tables
+               echo -e "${GREEN}✔ 替换完成，请记得清理缓存${NC}"; pause_prompt;;
+        esac
+    done
+}
+
 function telegram_manager() {
     while true; do
         clear; echo -e "${YELLOW}=== 🤖 Telegram 机器人管理 ===${NC}"
@@ -258,7 +306,7 @@ function sys_monitor() {
 function log_manager() { 
     while true; do 
         clear; echo -e "${YELLOW}=== 📜 日志管理系统 ===${NC}"
-        echo " 1. 查看最新日志 (Top 50)"
+        echo " 1. 查看最新操作日志 (Top 50)"
         echo " 2. 清空日志文件"
         echo " 3. 配置定时清理任务 (7天)"
         echo " 0. 返回上一级"
@@ -432,8 +480,8 @@ function traffic_manager() {
 # --- 基础操作函数 ---
 function init_gateway() { local m=$1; if ! docker network ls|grep -q proxy-net; then docker network create proxy-net >/dev/null; fi; mkdir -p "$GATEWAY_DIR"; cd "$GATEWAY_DIR"; echo "client_max_body_size 1024m;" > upload_size.conf; echo "proxy_read_timeout 600s;" >> upload_size.conf; echo "proxy_send_timeout 600s;" >> upload_size.conf; cat > docker-compose.yml <<EOF
 services:
-  nginx-proxy: {image: nginxproxy/nginx-proxy, container_name: gateway_proxy, ports: ["80:80", "443:443"], volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:ro, /var/run/docker.sock:/tmp/docker.sock:ro, ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro, ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro, ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro], networks: ["proxy-net"], restart: always, environment: ["TRUST_DOWNSTREAM_PROXY=true"]}
-  acme-companion: {image: nginxproxy/acme-companion, container_name: gateway_acme, volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:rw, acme:/etc/acme.sh, /var/run/docker.sock:/var/run/docker.sock:ro], environment: ["DEFAULT_EMAIL=admin@localhost.com", "NGINX_PROXY_CONTAINER=gateway_proxy", "ACME_CA_URI=https://acme-v02.api.letsencrypt.org/directory"], networks: ["proxy-net"], depends_on: ["nginx-proxy"], restart: always}
+  nginx-proxy: {image: nginxproxy/nginx-proxy, container_name: gateway_proxy, ports: ["80:80", "443:443"], logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:ro, /var/run/docker.sock:/tmp/docker.sock:ro, ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro, ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro, ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro], networks: ["proxy-net"], restart: always, environment: ["TRUST_DOWNSTREAM_PROXY=true"]}
+  acme-companion: {image: nginxproxy/acme-companion, container_name: gateway_acme, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:rw, acme:/etc/acme.sh, /var/run/docker.sock:/var/run/docker.sock:ro], environment: ["DEFAULT_EMAIL=admin@localhost.com", "NGINX_PROXY_CONTAINER=gateway_proxy", "ACME_CA_URI=https://acme-v02.api.letsencrypt.org/directory"], networks: ["proxy-net"], depends_on: ["nginx-proxy"], restart: always}
 volumes: {conf: , vhost: , html: , certs: , acme: }
 networks: {proxy-net: {external: true}}
 EOF
@@ -454,12 +502,13 @@ EOF
     cat > "$sdir/uploads.ini" <<EOF
 file_uploads=On; memory_limit=512M; upload_max_filesize=512M; post_max_size=512M; max_execution_time=600;
 EOF
+    # [V8改进] 添加 logging 配置
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
-  db: {image: $di, container_name: ${pname}_db, restart: always, environment: {MYSQL_ROOT_PASSWORD: $db_pass, MYSQL_DATABASE: wordpress, MYSQL_USER: wp_user, MYSQL_PASSWORD: $db_pass}, volumes: [db_data:/var/lib/mysql], networks: [default]}
-  redis: {image: redis:$rt, container_name: ${pname}_redis, restart: always, networks: [default]}
-  wordpress: {image: wordpress:$pt, container_name: ${pname}_app, restart: always, depends_on: [db, redis], environment: {WORDPRESS_DB_HOST: db, WORDPRESS_DB_USER: wp_user, WORDPRESS_DB_PASSWORD: $db_pass, WORDPRESS_DB_NAME: wordpress, WORDPRESS_CONFIG_EXTRA: "define('WP_REDIS_HOST','redis');define('WP_REDIS_PORT',6379);define('WP_HOME','https://'.\$\$_SERVER['HTTP_HOST']);define('WP_SITEURL','https://'.\$\$_SERVER['HTTP_HOST']);if(isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'])&&strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'],'https')!==false){\$\$_SERVER['HTTPS']='on';}"}, volumes: [wp_data:/var/www/html, ./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini], networks: [default]}
-  nginx: {image: nginx:alpine, container_name: ${pname}_nginx, restart: always, volumes: [wp_data:/var/www/html, ./nginx.conf:/etc/nginx/conf.d/default.conf, ./waf.conf:/etc/nginx/waf.conf], environment: {VIRTUAL_HOST: "$fd", LETSENCRYPT_HOST: "$fd", LETSENCRYPT_EMAIL: "$email"}, networks: [default, proxy-net]}
+  db: {image: $di, container_name: ${pname}_db, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, environment: {MYSQL_ROOT_PASSWORD: $db_pass, MYSQL_DATABASE: wordpress, MYSQL_USER: wp_user, MYSQL_PASSWORD: $db_pass}, volumes: [db_data:/var/lib/mysql], networks: [default]}
+  redis: {image: redis:$rt, container_name: ${pname}_redis, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, networks: [default]}
+  wordpress: {image: wordpress:$pt, container_name: ${pname}_app, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, depends_on: [db, redis], environment: {WORDPRESS_DB_HOST: db, WORDPRESS_DB_USER: wp_user, WORDPRESS_DB_PASSWORD: $db_pass, WORDPRESS_DB_NAME: wordpress, WORDPRESS_CONFIG_EXTRA: "define('WP_REDIS_HOST','redis');define('WP_REDIS_PORT',6379);define('WP_HOME','https://'.\$\$_SERVER['HTTP_HOST']);define('WP_SITEURL','https://'.\$\$_SERVER['HTTP_HOST']);if(isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'])&&strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'],'https')!==false){\$\$_SERVER['HTTPS']='on';}"}, volumes: [wp_data:/var/www/html, ./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini], networks: [default]}
+  nginx: {image: nginx:alpine, container_name: ${pname}_nginx, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [wp_data:/var/www/html, ./nginx.conf:/etc/nginx/conf.d/default.conf, ./waf.conf:/etc/nginx/waf.conf], environment: {VIRTUAL_HOST: "$fd", LETSENCRYPT_HOST: "$fd", LETSENCRYPT_EMAIL: "$email"}, networks: [default, proxy-net]}
 volumes: {db_data: , wp_data: }
 networks: {proxy-net: {external: true}}
 EOF
@@ -471,7 +520,7 @@ function create_proxy() {
     generate_nginx_conf "$tu" "$d" "$pm"
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
-  proxy: {image: nginx:alpine, container_name: ${d//./_}_worker, restart: always, volumes: [./nginx-proxy.conf:/etc/nginx/conf.d/default.conf], extra_hosts: ["host.docker.internal:host-gateway"], environment: {VIRTUAL_HOST: "$fd", LETSENCRYPT_HOST: "$fd", LETSENCRYPT_EMAIL: "$e"}, networks: [proxy-net]}
+  proxy: {image: nginx:alpine, container_name: ${d//./_}_worker, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [./nginx-proxy.conf:/etc/nginx/conf.d/default.conf], extra_hosts: ["host.docker.internal:host-gateway"], environment: {VIRTUAL_HOST: "$fd", LETSENCRYPT_HOST: "$fd", LETSENCRYPT_EMAIL: "$e"}, networks: [proxy-net]}
 networks: {proxy-net: {external: true}}
 EOF
     cd "$sdir" && docker compose up -d; check_ssl_status "$d"; write_log "Created proxy $d"
@@ -493,7 +542,7 @@ function fix_upload_limit() { ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITE
 file_uploads=On; memory_limit=512M; upload_max_filesize=512M; post_max_size=512M; max_execution_time=600;
 EOF
 if [ -f "$s/nginx.conf" ]; then sed -i 's/client_max_body_size .*/client_max_body_size 512M;/g' "$s/nginx.conf"; fi; cd "$s" && docker compose restart; echo "OK"; pause_prompt; }
-function create_redirect() { read -p "Src Domain: " s; read -p "Target URL: " t; t=$(normalize_url "$t"); read -p "Email: " e; sdir="$SITES_DIR/$s"; mkdir -p "$sdir"; echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"; echo "services: {redirector: {image: nginx:alpine, container_name: ${s//./_}_redirect, restart: always, volumes: [./redirect.conf:/etc/nginx/conf.d/default.conf], environment: {VIRTUAL_HOST: \"$s\", LETSENCRYPT_HOST: \"$s\", LETSENCRYPT_EMAIL: \"$e\"}, networks: [proxy-net]}}" > "$sdir/docker-compose.yml"; echo "networks: {proxy-net: {external: true}}" >> "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; check_ssl_status "$s"; }
+function create_redirect() { read -p "Src Domain: " s; read -p "Target URL: " t; t=$(normalize_url "$t"); read -p "Email: " e; sdir="$SITES_DIR/$s"; mkdir -p "$sdir"; echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"; echo "services: {redirector: {image: nginx:alpine, container_name: ${s//./_}_redirect, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [./redirect.conf:/etc/nginx/conf.d/default.conf], environment: {VIRTUAL_HOST: \"$s\", LETSENCRYPT_HOST: \"$s\", LETSENCRYPT_EMAIL: \"$e\"}, networks: [proxy-net]}}" > "$sdir/docker-compose.yml"; echo "networks: {proxy-net: {external: true}}" >> "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; check_ssl_status "$s"; }
 function delete_site() { while true; do clear; echo "=== 🗑️ 删除网站 ==="; ls -1 "$SITES_DIR"; echo "----------------"; read -p "域名(0返回): " d; [ "$d" == "0" ] && return; if [ -d "$SITES_DIR/$d" ]; then read -p "确认? (y/n): " c; [ "$c" == "y" ] && cd "$SITES_DIR/$d" && docker compose down -v >/dev/null 2>&1 && cd .. && rm -rf "$SITES_DIR/$d" && echo "Deleted"; write_log "Deleted site $d"; fi; pause_prompt; done; }
 function list_sites() { clear; echo "=== 📂 站点列表 ==="; ls -1 "$SITES_DIR"; echo "----------------"; pause_prompt; }
 function cert_management() { while true; do clear; echo "1.列表 2.上传 3.重置 4.续签 0.返回"; read -p "选: " c; case $c in 0) return;; 1) docker exec gateway_proxy ls -lh /etc/nginx/certs|grep .crt; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "crt: " c; read -p "key: " k; docker cp "$c" gateway_acme:"/etc/nginx/certs/$d.crt"; docker cp "$k" gateway_acme:"/etc/nginx/certs/$d.key"; docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 3) read -p "域名: " d; docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key"; docker restart gateway_acme; echo "OK"; pause_prompt;; 4) docker exec gateway_acme /app/force_renew; echo "OK"; pause_prompt;; esac; done; }
@@ -528,16 +577,17 @@ function show_menu() {
     echo " 8. 修复反代配置"
     echo -e " 9. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
     echo " 10. 解除上传限制 (一键扩容)"
+    echo -e " 11. ${GREEN}WP-CLI 瑞士军刀 (重置密码/插件)${NC}"
     echo ""
     echo -e "${YELLOW}[数据管理]${NC}"
-    echo " 11. 数据库 导出/导入"
-    echo " 12. 整站 备份与还原 (智能扫描)"
+    echo " 12. 数据库 导出/导入"
+    echo " 13. 整站 备份与还原 (智能扫描)"
     echo ""
     echo -e "${RED}[安全与监控]${NC}"
-    echo " 13. 安全防御中心 (防火墙/WAF/证书/ssh防爆破)"
-    echo " 14. Telegram 通知 (报警/查看)"
-    echo " 15. 系统资源监控"
-    echo " 16. 日志管理系统"
+    echo " 14. 安全防御中心 (防火墙/WAF/证书/ssh防爆破)"
+    echo " 15. Telegram 通知 (报警/查看)"
+    echo " 16. 系统资源监控"
+    echo " 17. 日志管理系统"
     echo "-----------------------------------------"
     echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载${NC} | 0. 退出"
     echo -n "请选择: "
@@ -563,14 +613,14 @@ while true; do
         8) repair_proxy;; 
         9) component_manager;; 
         10) fix_upload_limit;; 
-        11) db_manager;; 
-        12) backup_restore_ops;; 
-        13) security_center;; 
-        14) telegram_manager;; 
-        15) sys_monitor;; 
-        16) log_manager;; 
+        11) wp_toolbox;; 
+        12) db_manager;; 
+        13) backup_restore_ops;; 
+        14) security_center;; 
+        15) telegram_manager;; 
+        16) sys_monitor;; 
+        17) log_manager;; 
         x|X) uninstall_cluster;; 
         0) exit 0;; 
     esac
 done
-
