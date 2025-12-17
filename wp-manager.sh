@@ -653,7 +653,7 @@ function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read 
 function show_menu() {
     clear
     echo -e "${GREEN}=== Docker web 集群管理 ($VERSION) ===${NC}"
-    echo -e "${CYAN}GitHub: lje02/wp-manager${NC}"
+    echo -e "${CYAN}请勿在生产环境中使用 脚本接管80 443端口${NC}"
     echo "-----------------------------------------"
     echo -e "${YELLOW}[新建站点]${NC}"
     echo " 1. 部署 WordPress 新站"
