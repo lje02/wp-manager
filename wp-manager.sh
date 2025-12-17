@@ -4384,7 +4384,7 @@ function backup_single_site() {
     return 0
 }
 
-function restore_single_site() {
+unction restore_single_site() {
     local backup_file=$1
     local site_name=$2
     
