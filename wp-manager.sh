@@ -548,8 +548,8 @@ while true; do
 💾 内存: \$mem_info
 💿 磁盘: \$disk_info
 🔗 连接: \$conn_count 个
-🐳 容器: \$container_count 个运行中"
-                    ;;
+🐳 容器: \$container_count 个运行中
+                                   ;;
                     
                 "/reboot_nginx"|"/重启nginx")
                     if [ -d "\$GATEWAY_DIR" ]; then
