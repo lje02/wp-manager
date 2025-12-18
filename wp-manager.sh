@@ -606,17 +606,15 @@ LIB_DIR="$BASE_DIR/library"
 
 # ================= 1. 初始化应用库 (内嵌模板) =================
 function init_library() {
-    # 确保库目录存在
     mkdir -p "$LIB_DIR"
 
-    # --- App 1: Uptime Kuma 监控面板 ---
-    # 如果目录不存在，则自动生成配置
-    if [ ! -d "$LIB_DIR/uptime-kuma" ]; then
-        echo -e "${YELLOW}>>> 正在初始化应用: Uptime Kuma...${NC}"
-        mkdir -p "$LIB_DIR/uptime-kuma"
-        # 写入中文名称
-        echo "Uptime Kuma 监控面板" > "$LIB_DIR/uptime-kuma/name.txt"
-        # 写入 Docker 配置模板
+    # ==========================================
+    # App 1: Uptime Kuma
+    # ==========================================
+    mkdir -p "$LIB_DIR/uptime-kuma"
+    echo "Uptime Kuma 监控面板" > "$LIB_DIR/uptime-kuma/name.txt"
+    
+    if [ ! -f "$LIB_DIR/uptime-kuma/docker-compose.yml" ]; then
         cat > "$LIB_DIR/uptime-kuma/docker-compose.yml" <<EOF
 services:
   uptime-kuma:
@@ -639,11 +637,13 @@ networks:
 EOF
     fi
 
-    # --- App 2: Alist 网盘列表  ---
-    if [ ! -d "$LIB_DIR/alist" ]; then
-        echo -e "${YELLOW}>>> 正在初始化应用: Alist...${NC}"
-        mkdir -p "$LIB_DIR/alist"
-        echo "Alist 网盘挂载列表" > "$LIB_DIR/alist/name.txt"
+    # ==========================================
+    # App 2: Alist 网盘
+    # ==========================================
+    mkdir -p "$LIB_DIR/alist"
+    echo "Alist 网盘挂载" > "$LIB_DIR/alist/name.txt"
+    
+    if [ ! -f "$LIB_DIR/alist/docker-compose.yml" ]; then
         cat > "$LIB_DIR/alist/docker-compose.yml" <<EOF
 services:
   alist:
@@ -664,37 +664,8 @@ networks:
     external: true
 EOF
     fi
-
-    # --- App 3: Portainer 容器管理 ---
-    if [ ! -d "$LIB_DIR/portainer" ]; then
-        echo -e "${YELLOW}>>> 正在初始化应用: Portainer...${NC}"
-        mkdir -p "$LIB_DIR/portainer"
-        echo "Portainer 容器管理器" > "$LIB_DIR/portainer/name.txt"
-        cat > "$LIB_DIR/portainer/docker-compose.yml" <<EOF
-services:
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: {{APP_ID}}_portainer
-    restart: always
-    security_opt:
-      - no-new-privileges:true
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./data:/data
-    environment:
-      - VIRTUAL_HOST={{DOMAIN}}
-      - LETSENCRYPT_HOST={{DOMAIN}}
-      - LETSENCRYPT_EMAIL={{EMAIL}}
-      - VIRTUAL_PORT=9000
-    networks:
-      - proxy-net
-networks:
-  proxy-net:
-    external: true
-EOF
-    fi
 }
+
 
 # 2. 通用安装函数
 function install_app() {
@@ -702,17 +673,34 @@ function install_app() {
     clear
     echo -e "${YELLOW}=== 📦 Docker 应用商店 ===${NC}"
     
-    # 列出 library 下的所有文件夹作为应用列表
+    # library 下的应用列表
     i=1
     apps=()
     for app in "$LIB_DIR"/*; do
         if [ -d "$app" ]; then
-            app_name=$(basename "$app")
-            echo "$i. $app_name"
-            apps[i]=$app_name
+            folder_name=$(basename "$app")
+            # 读取中文名称
+            if [ -f "$app/name.txt" ]; then
+                display_name=$(cat "$app/name.txt")
+            else
+                display_name=$folder_name
+            fi
+            
+            if (( i % 2 != 0 )); then
+                # 奇数行 (1, 3, 5...)：只打印，不换行
+                printf "${GREEN}%-2d.${NC} %-32s" "$i" "$display_name"
+            else
+                # 偶数行 (2, 4, 6...)：打印并强制换行
+                printf "${GREEN}%-2d.${NC} %-32s\n" "$i" "$display_name"
+            fi
+
+            apps[i]=$folder_name
             ((i++))
         fi
     done
+    
+    if (( (i-1) % 2 != 0 )); then echo ""; fi
+    # ==========================
     
     echo "0. 返回"
     echo "--------------------------"
