@@ -608,12 +608,11 @@ LIB_DIR="$BASE_DIR/library"
 function init_library() {
     mkdir -p "$LIB_DIR"
 
-    # ==========================================
-    # App 1: Uptime Kuma
-    # ==========================================
+    # --- App 1: Uptime Kuma ---
     mkdir -p "$LIB_DIR/uptime-kuma"
-    echo "Uptime Kuma 监控面板" > "$LIB_DIR/uptime-kuma/name.txt"
-    
+    echo "Uptime Kuma 监控" > "$LIB_DIR/uptime-kuma/name.txt"
+    echo "3001" > "$LIB_DIR/uptime-kuma/port.txt" 
+
     if [ ! -f "$LIB_DIR/uptime-kuma/docker-compose.yml" ]; then
         cat > "$LIB_DIR/uptime-kuma/docker-compose.yml" <<EOF
 services:
@@ -624,6 +623,8 @@ services:
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "{{HOST_PORT}}:3001"
     environment:
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
@@ -637,12 +638,11 @@ networks:
 EOF
     fi
 
-    # ==========================================
-    # App 2: Alist 网盘
-    # ==========================================
+    # --- App 2: Alist ---
     mkdir -p "$LIB_DIR/alist"
-    echo "Alist 网盘挂载" > "$LIB_DIR/alist/name.txt"
-    
+    echo "Alist 网盘程序" > "$LIB_DIR/alist/name.txt"
+    echo "5244" > "$LIB_DIR/alist/port.txt" # Alist 默认端口
+
     if [ ! -f "$LIB_DIR/alist/docker-compose.yml" ]; then
         cat > "$LIB_DIR/alist/docker-compose.yml" <<EOF
 services:
@@ -652,6 +652,8 @@ services:
     restart: always
     volumes:
       - ./data:/opt/alist/data
+    ports:
+      - "{{HOST_PORT}}:5244"
     environment:
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
@@ -671,7 +673,6 @@ EOF
 function install_app() {
     init_library
     clear
-
     echo -e "${YELLOW}=== 📦 Docker 应用商店 (内置模板) ===${NC}"
     printf "%-5s %-20s %-30s\n" "ID" "应用代号" "说明"
     echo "--------------------------------------------------------"
@@ -702,15 +703,25 @@ function install_app() {
     if [ "$choice" == "0" ] || [ -z "${apps[$choice]}" ]; then return; fi
     
     TARGET_APP=${apps[$choice]}
-    APP_NAME_CN=$(cat "$LIB_DIR/$TARGET_APP/name.txt" 2>/dev/null || echo $TARGET_APP)
+    echo -e "正在安装: ${CYAN}$TARGET_APP${NC}"
     
-    echo -e "\n您选择了: ${CYAN}$APP_NAME_CN ($TARGET_APP)${NC}"
-    
-    # 获取用户输入
+    if [ -f "$LIB_DIR/$TARGET_APP/port.txt" ]; then
+        DEFAULT_PORT=$(cat "$LIB_DIR/$TARGET_APP/port.txt")
+    else
+        DEFAULT_PORT="8080"
+    fi
+
     read -p "请输入绑定域名: " domain
     read -p "请输入邮箱 (用于SSL): " email
+    echo -e "该应用默认端口为: ${CYAN}${DEFAULT_PORT}${NC}"
+    read -p "请输入宿主机映射端口 (直接回车使用 ${DEFAULT_PORT}): " input_port
     
-    # 检查域名目录是否存在
+    # 逻辑判断：如果输入为空，则 HOST_PORT = DEFAULT_PORT
+    HOST_PORT=${input_port:-$DEFAULT_PORT}
+    
+    echo -e ">>> 将使用端口: ${GREEN}${HOST_PORT}${NC}"
+
+    # 检查域名目录
     SITE_PATH="$SITES_DIR/$domain"
     if [ -d "$SITE_PATH" ]; then
         echo -e "${RED}错误: 该域名的站点已存在！${NC}"
@@ -718,26 +729,25 @@ function install_app() {
         return
     fi
     
-    # === 核心逻辑 ===
-    # 1. 复制模板
+    # 复制与替换
     mkdir -p "$SITE_PATH"
     cp -r "$LIB_DIR/$TARGET_APP/"* "$SITE_PATH/"
     
-    # 2. 替换占位符 (AppID, Domain, Email)
-    # 生成一个唯一的 APP_ID (比如用域名去掉点) 以防止容器名冲突
     APP_ID=${domain//./_}
     
-    # 批量替换 docker-compose.yml 中的变量
+    # 替换变量
     sed -i "s|{{DOMAIN}}|$domain|g" "$SITE_PATH/docker-compose.yml"
     sed -i "s|{{EMAIL}}|$email|g" "$SITE_PATH/docker-compose.yml"
     sed -i "s|{{APP_ID}}|$APP_ID|g" "$SITE_PATH/docker-compose.yml"
     
-    # 3. 启动
+    # 替换端口变量
+    sed -i "s|{{HOST_PORT}}|$HOST_PORT|g" "$SITE_PATH/docker-compose.yml"
+    
     echo -e "${YELLOW}正在启动容器...${NC}"
     cd "$SITE_PATH" && docker compose up -d
     
     check_ssl_status "$domain"
-    write_log "Installed App $TARGET_APP for $domain"
+    write_log "Installed App $TARGET_APP ($domain : $HOST_PORT)"
 }
 function create_proxy() {
     read -p "1. 域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
