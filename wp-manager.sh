@@ -623,8 +623,6 @@ services:
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    ports:
-      - "{{HOST_PORT}}:3001"
     environment:
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
@@ -652,8 +650,6 @@ services:
     restart: always
     volumes:
       - ./data:/opt/alist/data
-    ports:
-      - "{{HOST_PORT}}:5244"
     environment:
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
@@ -803,7 +799,7 @@ function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read 
 function show_menu() {
     clear
     echo -e "${GREEN}=== Docker web 集群管理 ($VERSION) ===${NC}"
-    echo -e "${CYAN}请勿在生产环境中使用 脚本接管80 443端口${NC}"
+    echo -e "${CYAN}===请勿在生产环境中使用===${NC}"
     echo "-----------------------------------------"
     echo -e "${YELLOW}[新建站点]${NC}"
     echo " 1. 部署 WordPress 新站"
