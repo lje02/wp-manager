@@ -671,45 +671,40 @@ EOF
 function install_app() {
     init_library
     clear
-    echo -e "${YELLOW}=== 📦 Docker 应用商店 ===${NC}"
+
+    echo -e "${YELLOW}=== 📦 Docker 应用商店 (内置模板) ===${NC}"
+    printf "%-5s %-20s %-30s\n" "ID" "应用代号" "说明"
+    echo "--------------------------------------------------------"
     
-    # library 下的应用列表
     i=1
     apps=()
-    for app in "$LIB_DIR"/*; do
-        if [ -d "$app" ]; then
-            folder_name=$(basename "$app")
-            # 读取中文名称
-            if [ -f "$app/name.txt" ]; then
-                display_name=$(cat "$app/name.txt")
+    # 强制排序，避免 ls 顺序混乱
+    for app in $(ls -1 "$LIB_DIR" | sort); do
+        if [ -d "$LIB_DIR/$app" ]; then
+            folder_name=$(basename "$LIB_DIR/$app")
+            # 读取中文名称，如果没有则用文件夹名
+            if [ -f "$LIB_DIR/$app/name.txt" ]; then
+                display_name=$(cat "$LIB_DIR/$app/name.txt")
             else
                 display_name=$folder_name
             fi
             
-            if (( i % 2 != 0 )); then
-                # 奇数行 (1, 3, 5...)：只打印，不换行
-                printf "${GREEN}%-2d.${NC} %-32s" "$i" "$display_name"
-            else
-                # 偶数行 (2, 4, 6...)：打印并强制换行
-                printf "${GREEN}%-2d.${NC} %-32s\n" "$i" "$display_name"
-            fi
-
+            # 格式化输出
+            printf "${GREEN}%-5s${NC} %-20s %-30s\n" "[$i]" "$folder_name" "$display_name"
+            
             apps[i]=$folder_name
             ((i++))
         fi
     done
+    echo "--------------------------------------------------------"
     
-    if (( (i-1) % 2 != 0 )); then echo ""; fi
-    # ==========================
-    
-    echo "0. 返回"
-    echo "--------------------------"
-    read -p "请选择要安装的应用: " choice
-    
+    read -p "请选择应用编号 (0返回): " choice
     if [ "$choice" == "0" ] || [ -z "${apps[$choice]}" ]; then return; fi
     
     TARGET_APP=${apps[$choice]}
-    echo -e "正在安装: ${CYAN}$TARGET_APP${NC}"
+    APP_NAME_CN=$(cat "$LIB_DIR/$TARGET_APP/name.txt" 2>/dev/null || echo $TARGET_APP)
+    
+    echo -e "\n您选择了: ${CYAN}$APP_NAME_CN ($TARGET_APP)${NC}"
     
     # 获取用户输入
     read -p "请输入绑定域名: " domain
