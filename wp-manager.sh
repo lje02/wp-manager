@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V13 旗舰全功能版 (快捷指令: web)"
+VERSION="V14 全功能整合版 (快捷指令: web)"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
@@ -32,7 +32,7 @@ NC='\033[0m'
 
 # ================= 2. 基础检查与初始化 =================
 
-# [V12安全修复] 强制 Root 检查
+# 强制 Root 检查
 if [ "$(id -u)" != "0" ]; then
     echo -e "${RED}❌ 错误: 此脚本必须以 root 身份运行！${NC}"
     echo -e "请使用: ${YELLOW}sudo $0${NC}"
@@ -180,7 +180,6 @@ chmod +x "$LISTENER_SCRIPT"
 
 # ================= 4. 高级业务功能 =================
 
-# [V10] 主机安全审计
 function server_audit() {
     check_dependencies
     while true; do
@@ -413,7 +412,7 @@ function init_library() {
     mkdir -p "$LIB_DIR/uptime-kuma"; [ ! -f "$LIB_DIR/uptime-kuma/docker-compose.yml" ] && echo "Uptime Kuma" > "$LIB_DIR/uptime-kuma/name.txt" && echo "3001" > "$LIB_DIR/uptime-kuma/port.txt" && echo "services: {uptime-kuma: {image: louislam/uptime-kuma:1, container_name: {{APP_ID}}_kuma, restart: always, volumes: [./data:/app/data, /var/run/docker.sock:/var/run/docker.sock:ro], environment: [VIRTUAL_HOST={{DOMAIN}}, LETSENCRYPT_HOST={{DOMAIN}}, LETSENCRYPT_EMAIL={{EMAIL}}, VIRTUAL_PORT=3001], networks: [proxy-net]}}" > "$LIB_DIR/uptime-kuma/docker-compose.yml" && echo "networks: {proxy-net: {external: true}}" >> "$LIB_DIR/uptime-kuma/docker-compose.yml"
     mkdir -p "$LIB_DIR/alist"; [ ! -f "$LIB_DIR/alist/docker-compose.yml" ] && echo "Alist" > "$LIB_DIR/alist/name.txt" && echo "5244" > "$LIB_DIR/alist/port.txt" && echo "services: {alist: {image: xhofe/alist:latest, container_name: {{APP_ID}}_alist, restart: always, volumes: [./data:/opt/alist/data], environment: [VIRTUAL_HOST={{DOMAIN}}, LETSENCRYPT_HOST={{DOMAIN}}, LETSENCRYPT_EMAIL={{EMAIL}}, VIRTUAL_PORT=5244], networks: [proxy-net]}}" > "$LIB_DIR/alist/docker-compose.yml" && echo "networks: {proxy-net: {external: true}}" >> "$LIB_DIR/alist/docker-compose.yml"
     
-    # [V13新增] OpenList
+    # [OpenList]
     mkdir -p "$LIB_DIR/openlist"
     if [ ! -f "$LIB_DIR/openlist/docker-compose.yml" ]; then
         echo "OpenList" > "$LIB_DIR/openlist/name.txt"; echo "5244" > "$LIB_DIR/openlist/port.txt" 
@@ -437,6 +436,67 @@ function install_app() {
     mkdir -p "$SITE_PATH" && cp -r "$LIB_DIR/$TARGET_APP/"* "$SITE_PATH/"
     APP_ID=${d//./_}; sed -i "s|{{DOMAIN}}|$d|g" "$SITE_PATH/docker-compose.yml"; sed -i "s|{{EMAIL}}|$e|g" "$SITE_PATH/docker-compose.yml"; sed -i "s|{{APP_ID}}|$APP_ID|g" "$SITE_PATH/docker-compose.yml"; sed -i "s|{{HOST_PORT}}|$HOST_PORT|g" "$SITE_PATH/docker-compose.yml"
     echo "启动中..."; cd "$SITE_PATH" && docker compose up -d; check_ssl_status "$d"
+}
+
+# [Old 3] 找回
+function create_redirect() {
+    read -p "源域名: " s; validate_domain "$s" || return
+    read -p "目标URL (http/https): " t; t=$(normalize_url "$t")
+    read -p "邮箱: " e
+    sdir="$SITES_DIR/$s"; mkdir -p "$sdir"
+    echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"
+    cat > "$sdir/docker-compose.yml" <<EOF
+services:
+  redirector: {image: nginx:alpine, container_name: ${s//./_}_redirect, restart: always, volumes: [./redirect.conf:/etc/nginx/conf.d/default.conf], environment: {VIRTUAL_HOST: "$s", LETSENCRYPT_HOST: "$s", LETSENCRYPT_EMAIL: "$e"}, networks: [proxy-net]}
+networks: {proxy-net: {external: true}}
+EOF
+    cd "$sdir" && docker compose up -d; check_ssl_status "$s"
+}
+
+# [Old 8] 找回
+function change_domain() {
+    ls -1 "$SITES_DIR"; read -p "旧域名: " o; [ ! -d "$SITES_DIR/$o" ] && return
+    read -p "新域名: " n; validate_domain "$n" || return
+    echo -e "${YELLOW}正在停机迁移...${NC}"; cd "$SITES_DIR/$o" && docker compose down
+    cd .. && mv "$o" "$n" && cd "$n"; sed -i "s/$o/$n/g" docker-compose.yml
+    docker compose up -d
+    if grep -q "image: .*wordpress" docker-compose.yml; then
+        echo -e "${CYAN}WordPress替换数据库...${NC}"
+        wp_c=$(docker compose ps -q wordpress)
+        docker run --rm --volumes-from $wp_c --network container:$wp_c wordpress:cli wp search-replace "$o" "$n" --all-tables --skip-columns=guid
+    fi
+    [ -f "nginx-proxy.conf" ] && sed -i "s/$o/$n/g" nginx-proxy.conf
+    docker exec gateway_proxy nginx -s reload; echo -e "${GREEN}✔ 迁移完成${NC}"; write_log "Changed $o to $n"; pause_prompt
+}
+
+# [Old 9] 找回
+function repair_proxy() {
+    ls -1 "$SITES_DIR"; read -p "域名: " d; sdir="$SITES_DIR/$d"; [ ! -d "$sdir" ] && return
+    read -p "新目标URL: " tu; tu=$(normalize_url "$tu")
+    echo "server { listen 80; server_name localhost; location / { proxy_pass $tu; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_ssl_server_name on; } }" > "$sdir/nginx-proxy.conf"
+    cd "$sdir" && docker compose restart; echo "OK"; pause_prompt
+}
+
+# [Old 13] 找回
+function db_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 数据库管理 ===${NC}"
+        echo " 1. 导出 (Dump)  2. 导入 (Import)  0. 返回"
+        read -p "选: " c
+        case $c in 
+            0) return;; 
+            1) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; 
+               pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}')
+               if [ -z "$pwd" ]; then echo "非数据库站点"; pause_prompt; continue; fi
+               docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$s/${d}.sql"
+               echo "导出成功: $s/${d}.sql"; pause_prompt;; 
+            2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "SQL文件绝对路径: " f; s="$SITES_DIR/$d"
+               if [ ! -f "$f" ]; then echo "文件不存在"; pause_prompt; continue; fi
+               pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}')
+               cat "$f" | docker compose -f "$s/docker-compose.yml" exec -T db mysql -u root -p"$pwd"
+               echo "导入完成"; pause_prompt;; 
+        esac
+    done 
 }
 
 function create_site() {
@@ -479,7 +539,6 @@ EOF
     cd "$sdir" && docker compose up -d; check_ssl_status "$d";
 }
 
-# [V12安全修复] 
 function delete_site() { 
     while true; do 
         clear; echo -e "${YELLOW}=== 🗑️ 删除网站 (增强版) ===${NC}"; ls -1 "$SITES_DIR"; echo "----------------"; 
@@ -499,7 +558,6 @@ function delete_site() {
     done 
 }
 
-# [V12增强] 
 function list_sites() {
     clear; echo -e "${YELLOW}=== 📂 站点列表 ===${NC}"
     if [ ! -d "$SITES_DIR" ] || [ -z "$(ls -A "$SITES_DIR")" ]; then echo -e "${RED}无站点${NC}"; pause_prompt; return; fi
@@ -513,7 +571,8 @@ function list_sites() {
                 if grep -q "image: .*wordpress" "$dc"; then app_type="WordPress";
                 elif grep -q "image: .*alist" "$dc"; then app_type="Alist";
                 elif grep -q "image: .*openlist" "$dc"; then app_type="OpenList";
-                elif grep -q "proxy_pass" "$site_path/nginx-proxy.conf" 2>/dev/null; then app_type="反代"; fi
+                elif grep -q "proxy_pass" "$site_path/nginx-proxy.conf" 2>/dev/null; then app_type="反代";
+                elif grep -q "redirector" "$dc"; then app_type="301跳转"; fi
             fi
             site_id=${domain//./_}; if docker ps --format '{{.Names}}' | grep -q "$site_id"; then st="${GREEN}Running${NC}"; fi
             printf "%-25s %-15s %-15s\n" "$domain" "$app_type" "$st"
@@ -523,7 +582,6 @@ function list_sites() {
     pause_prompt
 }
 
-# [V12修复] 
 function backup_restore_ops() { 
     while true; do 
         clear; echo -e "${YELLOW}=== 备份与还原 (安全版) ===${NC}"
@@ -586,19 +644,24 @@ function show_menu() {
     echo -e "${YELLOW}[建站]${NC}"
     echo " 1. 新建 WordPress"
     echo " 2. 新建 反向代理"
-    echo " 3. 应用商店 (OpenList/Alist)"
+    echo " 3. 新建 域名重定向 (301)"
+    echo " 4. 应用商店 (OpenList/Alist)"
     echo -e "${YELLOW}[运维]${NC}"
-    echo " 4. 站点列表 (状态)"
-    echo " 5. 删除站点 (安全)"
-    echo " 6. 备份与还原"
-    echo " 7. 容器监控"
-    echo " 8. 组件升级"
-    echo " 9. WP-CLI 工具箱"
+    echo " 5. 站点列表 (状态)"
+    echo " 6. 删除站点 (安全)"
+    echo " 7. 备份与还原"
+    echo " 8. 更换域名"
+    echo " 9. 修复反代"
+    echo " 10. 数据库管理"
+    echo -e "${YELLOW}[高级]${NC}"
+    echo " 11. 容器监控"
+    echo " 12. 组件升级"
+    echo " 13. WP-CLI 工具箱"
     echo -e "${RED}[安全]${NC}"
-    echo " 10. 安全防御中心 (WAF/审计)"
-    echo " 11. Telegram 通知"
-    echo " 12. 系统资源监控"
-    echo " 13. 日志管理"
+    echo " 14. 安全防御中心 (WAF/审计)"
+    echo " 15. Telegram 通知"
+    echo " 16. 系统资源监控"
+    echo " 17. 日志管理"
     echo "-----------------------------------------"
     echo -e "${BLUE} u. 更新${NC} | ${RED}x. 卸载${NC} | 0. 退出"
     echo -n "请选择: "
@@ -615,17 +678,21 @@ while true; do
         u|U) update_script;; 
         1) create_site;; 
         2) create_proxy;; 
-        3) install_app;;
-        4) list_sites;; 
-        5) delete_site;; 
-        6) backup_restore_ops;; 
-        7) container_ops;; 
-        8) component_manager;; 
-        9) wp_toolbox;; 
-        10) security_center;; 
-        11) telegram_manager;; 
-        12) sys_monitor;; 
-        13) log_manager;; 
+        3) create_redirect;;
+        4) install_app;;
+        5) list_sites;; 
+        6) delete_site;; 
+        7) backup_restore_ops;; 
+        8) change_domain;; 
+        9) repair_proxy;; 
+        10) db_manager;;
+        11) container_ops;; 
+        12) component_manager;; 
+        13) wp_toolbox;; 
+        14) security_center;; 
+        15) telegram_manager;; 
+        16) sys_monitor;; 
+        17) log_manager;; 
         x|X) uninstall_cluster;; 
         0) exit 0;; 
     esac
