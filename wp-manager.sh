@@ -648,7 +648,7 @@ EOF
 
 function install_app() {
     init_library
-    clear; echo -e "${YELLOW}=== 📦 Docker 应用商店 ===${NC}"
+    clear; echo -e "${YELLOW}=== 📦 Docker 其它应用 ===${NC}"
     printf "%-5s %-20s %-30s\n" "ID" "应用代号" "说明"
     echo "--------------------------------------------------------"
     
