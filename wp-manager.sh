@@ -773,8 +773,49 @@ if [ -f "$s/nginx.conf" ]; then sed -i 's/client_max_body_size .*/client_max_bod
 
 function create_redirect() { read -p "Src Domain: " s; validate_domain "$s" || return; read -p "Target URL: " t; t=$(normalize_url "$t"); read -p "Email: " e; sdir="$SITES_DIR/$s"; mkdir -p "$sdir"; echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"; echo "services: {redirector: {image: nginx:alpine, container_name: ${s//./_}_redirect, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [./redirect.conf:/etc/nginx/conf.d/default.conf], environment: {VIRTUAL_HOST: \"$s\", LETSENCRYPT_HOST: \"$s\", LETSENCRYPT_EMAIL: \"$e\"}, networks: [proxy-net]}}" > "$sdir/docker-compose.yml"; echo "networks: {proxy-net: {external: true}}" >> "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; check_ssl_status "$s"; }
 
-function delete_site() { while true; do clear; echo "=== 🗑️ 删除网站 ==="; ls -1 "$SITES_DIR"; echo "----------------"; read -p "域名(0返回): " d; [ "$d" == "0" ] && return; if [ -d "$SITES_DIR/$d" ]; then read -p "确认? (y/n): " c; [ "$c" == "y" ] && cd "$SITES_DIR/$d" && docker compose down -v >/dev/null 2>&1 && cd .. && rm -rf "$SITES_DIR/$d" && echo "Deleted"; write_log "Deleted site $d"; fi; pause_prompt; done; }
-function list_sites() { clear; echo "=== 📂 站点列表 ==="; ls -1 "$SITES_DIR"; echo "----------------"; pause_prompt; }
+function delete_site() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 🗑️ 删除网站 (增强版) ===${NC}"; 
+        ls -1 "$SITES_DIR"; 
+        echo "----------------"; 
+        read -p "请输入要删除的域名 (0返回): " d; 
+        [ "$d" == "0" ] && return; 
+        
+        target_dir="$SITES_DIR/$d"
+        
+        if [ -d "$target_dir" ]; then 
+            echo -e "${RED}⚠️  警告: 此操作将永久删除网站数据和数据库！${NC}"
+            read -p "确认删除 $d ? (输入 yes 确认): " c; 
+            
+            if [ "$c" == "yes" ]; then 
+                echo -e "${YELLOW}1. 正在尝试停止容器...${NC}"
+                # 尝试停止容器，容忍失败 (|| true 表示即使失败也不报错退出)
+                if [ -f "$target_dir/docker-compose.yml" ]; then
+                    cd "$target_dir" && docker compose down -v 2>/dev/null || true
+                else
+                    echo "   配置文件缺失，跳过停止步骤..."
+                fi
+                
+                echo -e "${YELLOW}2. 正在清理文件...${NC}"
+                # 确保切回主目录，防止在删除目录内执行删除
+                cd "$BASE_DIR" || exit
+                rm -rf "$target_dir"
+                
+                if [ ! -d "$target_dir" ]; then
+                    echo -e "${GREEN}✔ 网站 $d 已彻底删除${NC}"
+                    write_log "Deleted site $d"
+                else
+                    echo -e "${RED}❌ 删除失败，可能是权限问题或文件被占用${NC}"
+                fi
+            else
+                echo "操作已取消"
+            fi
+        else
+            echo -e "${RED}❌ 目录不存在${NC}"
+        fi
+        pause_prompt; 
+    done; 
+}
 
 function cert_management() { 
     while true; do 
