@@ -817,6 +817,63 @@ function delete_site() {
     done; 
 }
 
+function list_sites() {
+    clear
+    echo -e "${YELLOW}=== 📂 站点列表详情 (增强版) ===${NC}"
+    
+    # 1. 检查目录是否存在且不为空
+    if [ ! -d "$SITES_DIR" ] || [ -z "$(ls -A "$SITES_DIR")" ]; then
+        echo -e "${RED}❌ 当前没有部署任何站点。${NC}"
+        echo -e "   (请使用菜单 1 或 2 创建新站点)"
+        pause_prompt
+        return
+    fi
+
+    # 2. 打印表头
+    # %-25s 表示左对齐占25个字符宽，让表格整齐
+    printf "${CYAN}%-25s %-15s %-15s${NC}\n" "域名 (Domain)" "应用类型" "运行状态"
+    echo "--------------------------------------------------------"
+
+    # 3. 遍历并分析
+    for site_path in "$SITES_DIR"/*; do
+        if [ -d "$site_path" ]; then
+            domain=$(basename "$site_path")
+            
+            # --- 智能识别应用类型 ---
+            app_type="未知/纯静态"
+            dc_file="$site_path/docker-compose.yml"
+            
+            if [ -f "$dc_file" ]; then
+                if grep -q "image: .*wordpress" "$dc_file"; then app_type="WordPress";
+                elif grep -q "image: .*alist" "$dc_file"; then app_type="Alist网盘";
+                elif grep -q "image: .*uptime-kuma" "$dc_file"; then app_type="Kuma监控";
+                elif grep -q "image: .*filebrowser" "$dc_file"; then app_type="文件管理";
+                elif grep -q "image: .*openlist" "$dc_file"; then app_type="OpenList";
+                elif grep -q "proxy_pass" "$site_path/nginx-proxy.conf" 2>/dev/null; then app_type="反向代理"; 
+                fi
+            else
+                app_type="${RED}配置文件丢失${NC}"
+            fi
+
+            # --- 检查容器存活状态 ---
+            # 逻辑：只要有一个相关容器在运行，就视为 Running
+            # ${domain//./_} 是把域名里的点换成下划线，匹配容器名规则
+            site_id=${domain//./_}
+            if docker ps --format '{{.Names}}' | grep -q "$site_id"; then
+                status="${GREEN}● 运行中${NC}"
+            else
+                status="${RED}● 已停止${NC}"
+            fi
+
+            # 打印一行数据
+            printf "%-25s %-15s %-15s\n" "$domain" "$app_type" "$status"
+        fi
+    done
+    echo "--------------------------------------------------------"
+    echo -e "提示: 状态基于容器名检测，如果容器名未按标准命名可能显示不准。"
+    pause_prompt
+}
+
 function cert_management() { 
     while true; do 
         clear; echo -e "${YELLOW}=== HTTPS 证书管理 ===${NC}"
