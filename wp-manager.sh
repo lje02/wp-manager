@@ -644,7 +644,6 @@ services:
 networks: {proxy-net: {external: true}}
 EOF
     fi
-}
 
 # --- App 3: openlist ---
     mkdir -p "$LIB_DIR/openlist"
