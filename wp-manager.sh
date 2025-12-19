@@ -646,6 +646,36 @@ EOF
     fi
 }
 
+# --- App 3: openlist ---
+    mkdir -p "$LIB_DIR/openlist"
+    echo "Openlist 网盘挂载程序" > "$LIB_DIR/openlist/name.txt"
+    echo "5244" > "$LIB_DIR/openlist/port.txt" 
+
+    if [ ! -f "$LIB_DIR/openlist/docker-compose.yml" ]; then
+        cat > "$LIB_DIR/openlist/docker-compose.yml" <<EOF
+services:
+  openlist:
+    image: openlistteam/openlist:latest
+    container_name: {{APP_ID}}_openlist
+  user: '0:0'
+    restart: unless-stopped
+    volumes:
+      - ./data:/opt/openlist/data
+    environment:
+      - UMASK=022
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=5244
+    networks:
+      - proxy-net
+networks:
+  proxy-net:
+    external: true
+EOF
+    fi
+}
+
 function install_app() {
     init_library
     clear; echo -e "${YELLOW}=== 📦 Docker 其它应用 ===${NC}"
