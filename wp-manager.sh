@@ -657,11 +657,11 @@ services:
     image: openlistteam/openlist:latest
     container_name: {{APP_ID}}_openlist
   user: '0:0'
-    restart: unless-stopped
     volumes:
       - ./data:/opt/openlist/data
     environment:
       - UMASK=022
+    restart: unless-stopped
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
       - LETSENCRYPT_EMAIL={{EMAIL}}
