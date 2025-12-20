@@ -1387,50 +1387,95 @@ function uninstall_cluster() {
         exit 0
     fi
 }
-# ================= 7. 主菜单 =================
+# ================= 8. 主菜单与入口 =================
+
 function show_menu() {
     clear
-    echo -e "${GREEN}=== Docker Web Manager ($VERSION) ===${NC}"
-    echo -e "${YELLOW}[建站]${NC}"
-    echo " 1. 新建 WordPress (推荐)"
-    echo " 2. 新建 反向代理/其他"
-    echo " 3. 应用商店 (OpenList/Alist)"
-    echo -e "${YELLOW}[运维]${NC}"
-    echo " 5. 站点列表"
-    echo " 6. 删除站点"
-    echo " 7. 备份与还原"
-    echo -e "${YELLOW}[安全与工具]${NC}"
-    echo " 14. 安全防御中心 (WAF/防火墙)"
-    echo " 15. Telegram 通知"
-    echo " 16. 系统监控"
-    echo "-----------------------------------------"
-    echo -e "${BLUE} u. 更新脚本${NC} | 0. 退出"
-    echo -n "请选择: "
-    read option
+    # 打印标题
+    echo -e "${GREEN}====================================================${NC}"
+    echo -e "${GREEN}       🚀 Docker Web Manager ${YELLOW}$VERSION${NC}"
+    echo -e "${GREEN}====================================================${NC}"
+    
+    # --- 1. 核心建站 ---
+    echo -e "${CYAN}📂 [ 核心建站 ]${NC}"
+    printf "  ${GREEN}1.${NC} %-30s ${GREEN}2.${NC} %-30s\n" "新建 WordPress (推荐)" "新建 反向代理 (Proxy)"
+    printf "  ${GREEN}3.${NC} %-30s ${GREEN}4.${NC} %-30s\n" "新建 域名重定向 (301)" "应用商店 (Alist/Kuma)"
+    echo ""
+
+    # --- 2. 站点运维 ---
+    echo -e "${CYAN}🔧 [ 站点运维 ]${NC}"
+    printf "  ${GREEN}5.${NC} %-30s ${GREEN}6.${NC} %-30s\n" "站点列表 (状态检查)" "删除站点 (安全模式)"
+    printf "  ${GREEN}7.${NC} %-30s ${GREEN}8.${NC} %-30s\n" "备份与还原 (快照)" "更换域名 (自动替换DB)"
+    printf "  ${GREEN}9.${NC} %-30s ${GREEN}10.${NC} %-30s\n" "修复反代配置" "数据库管理 (导入/导出)"
+    echo ""
+
+    # --- 3. 高级功能 ---
+    echo -e "${CYAN}🛠️  [ 高级功能 ]${NC}"
+    printf "  ${GREEN}11.${NC} %-30s ${GREEN}12.${NC} %-30s\n" "WP-CLI 工具箱 (改密/救砖)" "组件版本切换 (PHP/Redis)"
+    printf "  ${GREEN}13.${NC} %-30s ${GREEN}14.${NC} %-30s\n" "Docker 容器进程监控" "防盗链设置"
+    echo ""
+
+    # --- 4. 安全与系统 ---
+    echo -e "${CYAN}🛡️  [ 安全与监控 ]${NC}"
+    printf "  ${GREEN}15.${NC} %-30s ${GREEN}16.${NC} %-30s\n" "安全防御中心 (WAF/防火墙)" "Telegram 报警机器人"
+    printf "  ${GREEN}17.${NC} %-30s ${GREEN}18.${NC} %-30s\n" "系统资源监控 (Top)" "日志管理 (清理)"
+    echo ""
+    
+    echo -e "${GREEN}====================================================${NC}"
+    echo -e "${BLUE} u. 更新脚本${NC}  |  ${RED}x. 卸载环境${NC}  |  0. 退出系统"
+    echo -e "${GREEN}====================================================${NC}"
+    echo -n "👉 请输入选项: "
 }
 
-# ================= 8. 入口 =================
+# --- 脚本入口逻辑 ---
+
+# 1. 预检与安装
 check_dependencies
 install_shortcut
-if ! docker ps --format '{{.Names}}' | grep -q "^gateway_proxy$"; then 
-    log_info "首次运行，初始化网关..."
+
+# 2. 首次运行初始化网关
+if ! docker ps --format '{{.Names}}' | grep -q "^gateway_proxy$"; then
+    log_info "检测到网关未启动，正在初始化..."
     init_gateway "auto"
 fi
 
+# 3. 主循环
 while true; do 
-    show_menu 
+    show_menu
+    read option
     case $option in 
-        u|U) update_script;; 
-        1) create_site;; 
-        2) log_info "请使用原脚本逻辑或自行扩展"; pause_prompt;; # 简化展示
-        3) install_app;;
-        5) list_sites;; 
-        6) delete_site;; 
-        7) log_info "请使用原脚本逻辑或自行扩展"; pause_prompt;;
-        14) security_center;; 
-        15) telegram_manager;; 
-        16) server_audit;; 
-        0) exit 0;; 
-        *) echo "无效选项"; sleep 1;;
+        1) create_site ;; 
+        2) create_proxy ;; 
+        3) create_redirect ;;
+        4) install_app ;;
+        
+        5) list_sites ;; 
+        6) delete_site ;; 
+        7) backup_restore_ops ;; 
+        8) change_domain ;; 
+        9) repair_proxy ;;
+        10) db_manager ;;
+        
+        11) wp_toolbox ;; 
+        12) component_manager ;; 
+        13) container_ops ;; # 原名，建议在前面定义 function container_ops() { cd "$GATEWAY_DIR" && docker compose ps; ... }
+        14) manage_hotlink ;;
+        
+        15) security_center ;; 
+        16) telegram_manager ;; 
+        17) sys_monitor ;; 
+        18) log_manager ;; 
+        
+        u|U) update_script ;; 
+        x|X) uninstall_cluster ;; 
+        0) 
+            clear
+            echo -e "${GREEN}👋 感谢使用，再见！${NC}"
+            exit 0 
+            ;; 
+        *) 
+            echo -e "${RED}❌ 无效选项，请重新输入...${NC}"
+            sleep 1 
+            ;; 
     esac
 done
