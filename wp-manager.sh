@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10增加应用商店 (快捷指令: web)"
+VERSION="V9 (快捷指令: web)"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
@@ -599,152 +599,6 @@ networks: {proxy-net: {external: true}}
 EOF
     cd "$sdir" && docker compose up -d; check_ssl_status "$fd"; write_log "Created site $fd"
 }
-# ================= 通用应用商店逻辑 =================
-
-# 定义应用库路径
-LIB_DIR="$BASE_DIR/library"
-
-# ================= 1. 初始化应用库 (内嵌模板) =================
-function init_library() {
-    mkdir -p "$LIB_DIR"
-
-    # --- App 1: Uptime Kuma ---
-    mkdir -p "$LIB_DIR/uptime-kuma"
-    echo "Uptime Kuma 监控" > "$LIB_DIR/uptime-kuma/name.txt"
-    echo "3001" > "$LIB_DIR/uptime-kuma/port.txt" 
-
-    if [ ! -f "$LIB_DIR/uptime-kuma/docker-compose.yml" ]; then
-        cat > "$LIB_DIR/uptime-kuma/docker-compose.yml" <<EOF
-services:
-  uptime-kuma:
-    image: louislam/uptime-kuma:1
-    container_name: {{APP_ID}}_kuma
-    restart: always
-    volumes:
-      - ./data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - VIRTUAL_HOST={{DOMAIN}}
-      - LETSENCRYPT_HOST={{DOMAIN}}
-      - LETSENCRYPT_EMAIL={{EMAIL}}
-      - VIRTUAL_PORT=3001
-    networks:
-      - proxy-net
-networks:
-  proxy-net:
-    external: true
-EOF
-    fi
-
-    # --- App 2: Alist ---
-    mkdir -p "$LIB_DIR/alist"
-    echo "Alist 网盘程序" > "$LIB_DIR/alist/name.txt"
-    echo "5244" > "$LIB_DIR/alist/port.txt" # Alist 默认端口
-
-    if [ ! -f "$LIB_DIR/alist/docker-compose.yml" ]; then
-        cat > "$LIB_DIR/alist/docker-compose.yml" <<EOF
-services:
-  alist:
-    image: xhofe/alist:latest
-    container_name: {{APP_ID}}_alist
-    restart: always
-    volumes:
-      - ./data:/opt/alist/data
-    environment:
-      - VIRTUAL_HOST={{DOMAIN}}
-      - LETSENCRYPT_HOST={{DOMAIN}}
-      - LETSENCRYPT_EMAIL={{EMAIL}}
-      - VIRTUAL_PORT=5244
-    networks:
-      - proxy-net
-networks:
-  proxy-net:
-    external: true
-EOF
-    fi
-}
-
-
-# 2. 通用安装函数
-function install_app() {
-    init_library
-    clear
-    echo -e "${YELLOW}=== 📦 Docker 应用商店 (内置模板) ===${NC}"
-    printf "%-5s %-20s %-30s\n" "ID" "应用代号" "说明"
-    echo "--------------------------------------------------------"
-    
-    i=1
-    apps=()
-    # 强制排序，避免 ls 顺序混乱
-    for app in $(ls -1 "$LIB_DIR" | sort); do
-        if [ -d "$LIB_DIR/$app" ]; then
-            folder_name=$(basename "$LIB_DIR/$app")
-            # 读取中文名称，如果没有则用文件夹名
-            if [ -f "$LIB_DIR/$app/name.txt" ]; then
-                display_name=$(cat "$LIB_DIR/$app/name.txt")
-            else
-                display_name=$folder_name
-            fi
-            
-            # 格式化输出
-            printf "${GREEN}%-5s${NC} %-20s %-30s\n" "[$i]" "$folder_name" "$display_name"
-            
-            apps[i]=$folder_name
-            ((i++))
-        fi
-    done
-    echo "--------------------------------------------------------"
-    
-    read -p "请选择应用编号 (0返回): " choice
-    if [ "$choice" == "0" ] || [ -z "${apps[$choice]}" ]; then return; fi
-    
-    TARGET_APP=${apps[$choice]}
-    echo -e "正在安装: ${CYAN}$TARGET_APP${NC}"
-    
-    if [ -f "$LIB_DIR/$TARGET_APP/port.txt" ]; then
-        DEFAULT_PORT=$(cat "$LIB_DIR/$TARGET_APP/port.txt")
-    else
-        DEFAULT_PORT="8080"
-    fi
-
-    read -p "请输入绑定域名: " domain
-    read -p "请输入邮箱 (用于SSL): " email
-    echo -e "该应用默认端口为: ${CYAN}${DEFAULT_PORT}${NC}"
-    read -p "请输入宿主机映射端口 (直接回车使用 ${DEFAULT_PORT}): " input_port
-    
-    # 逻辑判断：如果输入为空，则 HOST_PORT = DEFAULT_PORT
-    HOST_PORT=${input_port:-$DEFAULT_PORT}
-    
-    echo -e ">>> 将使用端口: ${GREEN}${HOST_PORT}${NC}"
-
-    # 检查域名目录
-    SITE_PATH="$SITES_DIR/$domain"
-    if [ -d "$SITE_PATH" ]; then
-        echo -e "${RED}错误: 该域名的站点已存在！${NC}"
-        pause_prompt
-        return
-    fi
-    
-    # 复制与替换
-    mkdir -p "$SITE_PATH"
-    cp -r "$LIB_DIR/$TARGET_APP/"* "$SITE_PATH/"
-    
-    APP_ID=${domain//./_}
-    
-    # 替换变量
-    sed -i "s|{{DOMAIN}}|$domain|g" "$SITE_PATH/docker-compose.yml"
-    sed -i "s|{{EMAIL}}|$email|g" "$SITE_PATH/docker-compose.yml"
-    sed -i "s|{{APP_ID}}|$APP_ID|g" "$SITE_PATH/docker-compose.yml"
-    
-    # 替换端口变量
-    sed -i "s|{{HOST_PORT}}|$HOST_PORT|g" "$SITE_PATH/docker-compose.yml"
-    
-    echo -e "${YELLOW}正在启动容器...${NC}"
-    cd "$SITE_PATH" && docker compose up -d
-    
-    check_ssl_status "$domain"
-    write_log "Installed App $TARGET_APP ($domain : $HOST_PORT)"
-}
 function create_proxy() {
     read -p "1. 域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
     echo -e "1.URL 2.IP:端口"; read -p "类型: " t; if [ "$t" == "2" ]; then read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"; read -p "端口: " p; tu="http://$ip:$p"; pm="2"; else read -p "URL: " tu; tu=$(normalize_url "$tu"); echo "1.镜像 2.代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"; fi
@@ -805,27 +659,26 @@ function show_menu() {
     echo " 1. 部署 WordPress 新站"
     echo " 2. 新建 反向代理 (IP:端口 / 域名)"
     echo " 3. 新建 域名重定向 (301)"
-    echo -e " 4. ${CYAN}应用商店 (一键部署其他应用)${NC}"
     echo ""
     echo -e "${YELLOW}[站点运维]${NC}"
-    echo " 5. 查看站点列表"
-    echo " 6. 容器状态监控"
-    echo " 7. 删除指定站点"
-    echo " 8. 更换网站域名"
-    echo " 9. 修复反代配置"
-    echo -e " 10. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
-    echo " 11. 解除上传限制 (一键扩容)"
-    echo -e " 12. ${GREEN}WP-CLI 瑞士军刀 (重置密码/插件)${NC}"
+    echo " 4. 查看站点列表"
+    echo " 5. 容器状态监控"
+    echo " 6. 删除指定站点"
+    echo " 7. 更换网站域名"
+    echo " 8. 修复反代配置"
+    echo -e " 9. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
+    echo " 10. 解除上传限制 (一键扩容)"
+    echo -e " 11. ${GREEN}WP-CLI 瑞士军刀 (重置密码/插件)${NC}"
     echo ""
     echo -e "${YELLOW}[数据管理]${NC}"
-    echo " 13. 数据库 导出/导入"
-    echo " 14. 整站 备份与还原 (智能扫描)"
+    echo " 12. 数据库 导出/导入"
+    echo " 13. 整站 备份与还原 (智能扫描)"
     echo ""
     echo -e "${RED}[安全与监控]${NC}"
-    echo -e " 15. 安全防御中心 ${GREEN}(含主机审计/挖矿检测)${NC}" # Updated text
-    echo " 16. Telegram 通知 (报警/查看)"
-    echo " 17. 系统资源监控"
-    echo " 18. 日志管理系统"
+    echo -e " 14. 安全防御中心 ${GREEN}(含主机审计/挖矿检测)${NC}" # Updated text
+    echo " 15. Telegram 通知 (报警/查看)"
+    echo " 16. 系统资源监控"
+    echo " 17. 日志管理系统"
     echo "-----------------------------------------"
     echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载${NC} | 0. 退出"
     echo -n "请选择: "
@@ -843,22 +696,21 @@ while true; do
         u|U) update_script;; 
         1) create_site;; 
         2) create_proxy;; 
-        3) create_redirect;;
-        4) install_app;;
-        5) list_sites;; 
-        6) container_ops;; 
-        7) delete_site;; 
-        8) change_domain;; 
-        9) repair_proxy;; 
-        10) component_manager;; 
-        11) fix_upload_limit;; 
-        12) wp_toolbox;; 
-        13) db_manager;; 
-        14) backup_restore_ops;; 
-        15) security_center;; 
-        16) telegram_manager;; 
-        17) sys_monitor;; 
-        18) log_manager;; 
+        3) create_redirect;; 
+        4) list_sites;; 
+        5) container_ops;; 
+        6) delete_site;; 
+        7) change_domain;; 
+        8) repair_proxy;; 
+        9) component_manager;; 
+        10) fix_upload_limit;; 
+        11) wp_toolbox;; 
+        12) db_manager;; 
+        13) backup_restore_ops;; 
+        14) security_center;; 
+        15) telegram_manager;; 
+        16) sys_monitor;; 
+        17) log_manager;; 
         x|X) uninstall_cluster;; 
         0) exit 0;; 
     esac
