@@ -1114,6 +1114,139 @@ function backup_restore_ops() {
         esac
     done 
 }
+function container_ops() {
+    while true; do
+        clear
+        echo -e "${GREEN}======================================================${NC}"
+        echo -e "${GREEN}       🐳 容器高级管理面板 (Docker Manager)${NC}"
+        echo -e "${GREEN}======================================================${NC}"
+        
+        # --- 1. 网关状态 ---
+        printf "${CYAN}%-4s %-25s %-15s %-10s${NC}\n" "ID" "服务名称" "状态" "端口"
+        echo "------------------------------------------------------"
+        
+        # 检查网关
+        if [ -d "$GATEWAY_DIR" ]; then
+            cd "$GATEWAY_DIR"
+            if docker compose ps --services --filter "status=running" | grep -q "nginx-proxy"; then
+                g_status="${GREEN}🟢 运行中${NC}"
+            else
+                g_status="${RED}🔴 已停止${NC}"
+            fi
+            printf "${YELLOW}%-4s${NC} %-25s %-24s %-10s\n" "0" "Nginx Gateway (网关)" "$g_status" "80/443"
+        else
+            printf "${YELLOW}%-4s${NC} %-25s %-24s\n" "0" "网关未安装" "${RED}缺失${NC}"
+        fi
+        
+        echo "------------------------------------------------------"
+
+        # --- 2. 站点列表状态 ---
+        i=1
+        site_map=()
+        
+        for site_path in "$SITES_DIR"/*; do
+            if [ -d "$site_path" ]; then
+                site_name=$(basename "$site_path")
+                site_map[$i]=$site_name
+                
+                # 检查该目录下的 compose 状态
+                cd "$site_path"
+                # 只要有一个服务在跑，就视为运行中
+                if docker compose ps --services --filter "status=running" 2>/dev/null | grep -q .; then
+                    s_status="${GREEN}🟢 运行中${NC}"
+                else
+                    s_status="${RED}🔴 已停止${NC}"
+                fi
+                
+                # 获取该站点暴露的端口 (如果有)
+                ports=$(docker compose ps --format "{{.Ports}}" 2>/dev/null | grep -o "0.0.0.0:[0-9]*" | cut -d: -f2 | tr '\n' ',' | sed 's/,$//')
+                [ -z "$ports" ] && ports="内部"
+
+                printf "${BLUE}%-4s${NC} %-25s %-24s %-10s\n" "$i" "$site_name" "$s_status" "$ports"
+                ((i++))
+            fi
+        done
+        echo "======================================================"
+        echo -e "${YELLOW}批量操作:${NC} [sa] 全部启动 | [xa] 全部停止 | [ra] 全部重启"
+        echo -e "${YELLOW}单项操作:${NC} 输入 ID 进入详细管理菜单"
+        echo -e "${GREEN}0. 返回主菜单${NC}"
+        
+        read -p "👉 请选择: " choice
+
+        # --- 3. 批量操作逻辑 ---
+        case $choice in
+            0) return ;; # 返回主菜单
+            
+            "sa") # Start All
+                echo -e "\n${GREEN}正在启动所有容器...${NC}"
+                cd "$GATEWAY_DIR" && docker compose up -d
+                for d in "$SITES_DIR"/*; do [ -d "$d" ] && cd "$d" && docker compose up -d; done
+                log_info "已执行：全部启动"
+                pause_prompt
+                continue ;;
+                
+            "xa") # Stop All
+                echo -e "\n${RED}正在停止所有容器...${NC}"
+                for d in "$SITES_DIR"/*; do [ -d "$d" ] && cd "$d" && docker compose stop; done
+                cd "$GATEWAY_DIR" && docker compose stop
+                log_info "已执行：全部停止"
+                pause_prompt
+                continue ;;
+                
+            "ra") # Restart All
+                echo -e "\n${YELLOW}正在重启所有容器...${NC}"
+                cd "$GATEWAY_DIR" && docker compose restart
+                for d in "$SITES_DIR"/*; do [ -d "$d" ] && cd "$d" && docker compose restart; done
+                log_info "已执行：全部重启"
+                pause_prompt
+                continue ;;
+        esac
+
+        # --- 4. 单项管理逻辑 ---
+        # 检查是否为 ID 0 (网关)
+        if [ "$choice" == "0" ] && [ -d "$GATEWAY_DIR" ]; then
+             target_name="Gateway"
+             target_path="$GATEWAY_DIR"
+        # 检查是否为有效站点 ID
+        elif [ ! -z "${site_map[$choice]}" ]; then
+             target_name="${site_map[$choice]}"
+             target_path="$SITES_DIR/$target_name"
+        else
+             continue
+        fi
+
+        # --- 5. 二级菜单 (单项操作) ---
+        while true; do
+            clear
+            echo -e "${CYAN}=== 管理: $target_name ===${NC}"
+            echo -e "当前路径: $target_path"
+            echo "------------------------"
+            # 显示该站点具体容器详情
+            cd "$target_path" && docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+            echo "------------------------"
+            echo " 1. 启动 (Start)"
+            echo " 2. 停止 (Stop)"
+            echo " 3. 重启 (Restart)"
+            echo " 4. 查看实时日志 (Logs)"
+            echo " 5. 重建容器 (Up -d --force-recreate)"
+            echo " 0. 返回上一级"
+            read -p "选: " op
+            
+            case $op in
+                0) break ;;
+                1) docker compose start && echo -e "${GREEN}✔ 已启动${NC}"; sleep 1 ;;
+                2) docker compose stop && echo -e "${RED}✔ 已停止${NC}"; sleep 1 ;;
+                3) docker compose restart && echo -e "${YELLOW}✔ 已重启${NC}"; sleep 1 ;;
+                4) 
+                    echo -e "${GREEN}按 Ctrl+C 退出日志查看${NC}"
+                    sleep 1
+                    docker compose logs -f --tail=50 
+                    ;;
+                5) docker compose up -d --force-recreate && echo -e "${GREEN}✔ 已重建${NC}"; sleep 1 ;;
+            esac
+        done
+    done
+}
 function wp_toolbox() {
     while true; do
         clear; echo -e "${YELLOW}=== 🛠️ WP-CLI 工具箱 ===${NC}"
@@ -1270,7 +1403,6 @@ function manage_hotlink() {
             # 更新 Nginx 配置添加 referer 检查
             sed -i '/location ~\* \\.(gif|jpg|png|webp)/d' "$s/nginx.conf" # 先删除旧规则防止重复
             
-            # 插入新规则 (这里比较复杂，简化为覆盖 nginx.conf 的关键部分，建议直接重写配置文件更安全)
             # 为了稳妥，这里重新生成 nginx.conf (带有防盗链)
             cat > "$s/nginx.conf" <<EOF
 server { 
@@ -1458,7 +1590,7 @@ while true; do
         
         11) wp_toolbox ;; 
         12) component_manager ;; 
-        13) container_ops ;; # 原名，建议在前面定义 function container_ops() { cd "$GATEWAY_DIR" && docker compose ps; ... }
+        13) container_ops ;;
         14) manage_hotlink ;;
         
         15) security_center ;; 
