@@ -412,14 +412,33 @@ function init_library() {
     mkdir -p "$LIB_DIR/uptime-kuma"; [ ! -f "$LIB_DIR/uptime-kuma/docker-compose.yml" ] && echo "Uptime Kuma" > "$LIB_DIR/uptime-kuma/name.txt" && echo "3001" > "$LIB_DIR/uptime-kuma/port.txt" && echo "services: {uptime-kuma: {image: louislam/uptime-kuma:1, container_name: {{APP_ID}}_kuma, restart: always, volumes: [./data:/app/data, /var/run/docker.sock:/var/run/docker.sock:ro], environment: [VIRTUAL_HOST={{DOMAIN}}, LETSENCRYPT_HOST={{DOMAIN}}, LETSENCRYPT_EMAIL={{EMAIL}}, VIRTUAL_PORT=3001], networks: [proxy-net]}}" > "$LIB_DIR/uptime-kuma/docker-compose.yml" && echo "networks: {proxy-net: {external: true}}" >> "$LIB_DIR/uptime-kuma/docker-compose.yml"
     mkdir -p "$LIB_DIR/alist"; [ ! -f "$LIB_DIR/alist/docker-compose.yml" ] && echo "Alist" > "$LIB_DIR/alist/name.txt" && echo "5244" > "$LIB_DIR/alist/port.txt" && echo "services: {alist: {image: xhofe/alist:latest, container_name: {{APP_ID}}_alist, restart: always, volumes: [./data:/opt/alist/data], environment: [VIRTUAL_HOST={{DOMAIN}}, LETSENCRYPT_HOST={{DOMAIN}}, LETSENCRYPT_EMAIL={{EMAIL}}, VIRTUAL_PORT=5244], networks: [proxy-net]}}" > "$LIB_DIR/alist/docker-compose.yml" && echo "networks: {proxy-net: {external: true}}" >> "$LIB_DIR/alist/docker-compose.yml"
     
-    # [OpenList]
+        # --- OpenList (修复缩进版) ---
     mkdir -p "$LIB_DIR/openlist"
     if [ ! -f "$LIB_DIR/openlist/docker-compose.yml" ]; then
-        echo "OpenList" > "$LIB_DIR/openlist/name.txt"; echo "5244" > "$LIB_DIR/openlist/port.txt" 
-        cat > "$LIB_DIR/openlist/docker-compose.yml" <<EOF
+        echo "OpenList" > "$LIB_DIR/openlist 网盘挂载/name.txt"
+        echo "5244" > "$LIB_DIR/openlist/port.txt" 
+        
+        # 注意：下面的内容缩进非常重要，不要手动修改空格
+cat > "$LIB_DIR/openlist/docker-compose.yml" <<EOF
 services:
-  openlist: {image: openlistteam/openlist:latest, container_name: {{APP_ID}}_openlist, user: '0:0', restart: unless-stopped, volumes: [./data:/opt/openlist/data], ports: ["{{HOST_PORT}}:5244"], environment: [UMASK=022, VIRTUAL_HOST={{DOMAIN}}, LETSENCRYPT_HOST={{DOMAIN}}, LETSENCRYPT_EMAIL={{EMAIL}}, VIRTUAL_PORT=5244], networks: [proxy-net]}
-networks: {proxy-net: {external: true}}
+  openlist:
+    image: openlistteam/openlist:latest
+    container_name: {{APP_ID}}_openlist
+    user: '0:0'
+    restart: unless-stopped
+    volumes:
+      - ./data:/opt/openlist/data
+    environment:
+      - UMASK=022
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=5244
+    networks:
+      - proxy-net
+networks:
+  proxy-net:
+    external: true
 EOF
     fi
 }
