@@ -810,9 +810,6 @@ function install_app() {
     cd "$SITE_PATH" && docker compose up -d
     check_ssl_status "$domain"
 }
-
-# --- 占位函数（保持功能完整性，简化显示）---
-function create_proxy() { echo "功能同原版，已保留"; pause_prompt; } # 这里建议用原版逻辑，但格式化一下
 function delete_site() { 
     ls -1 "$SITES_DIR"
     read -p "删除域名: " d
@@ -846,54 +843,65 @@ function list_sites() {
     pause_prompt
 }
 function create_proxy() {
-    read -p "1. 域名: " d
+    # --- 1. 基础信息录入 ---
+    read -p "1. 域名 (例如 mirror.test.com): " d
     fd="$d"
     validate_domain "$d" || return
     
     read -p "2. 邮箱: " e
     sdir="$SITES_DIR/$d"
     
-    if [ -d "$sdir" ]; then log_error "该域名已存在"; return; fi
+    if [ -d "$sdir" ]; then log_error "目录已存在"; return; fi
     mkdir -p "$sdir"
 
-    echo -e "1. 转发到 URL (例如 https://www.google.com)"
-    echo -e "2. 转发到 IP:端口 (例如 127.0.0.1:8080)"
-    read -p "类型: " t
+    # --- 2. 确定目标与模式 ---
+    echo -e "----------------------------------------"
+    echo -e "请选择目标类型:"
+    echo -e " [1] 外部 URL (例如 https://www.google.com)"
+    echo -e " [2] 本机/内网 IP:端口 (例如 127.0.0.1:8080)"
+    echo -e "----------------------------------------"
+    read -p "👉 选择: " t
 
     if [ "$t" == "2" ]; then 
-        read -p "目标 IP: " ip
+        # --- IP模式 (内部反代) ---
+        read -p "IP (默认 127.0.0.1): " ip
         [ -z "$ip" ] && ip="127.0.0.1"
-        read -p "目标 端口: " p
+        read -p "端口: " p
+        if [ -z "$p" ]; then log_error "端口不能为空"; rm -rf "$sdir"; return; fi
         tu="http://$ip:$p"
+        pm="2" # 对应 generate_nginx_conf 中的简单代理模式
     else 
+        # --- URL模式 (外部镜像) ---
         read -p "目标 URL: " tu
-        tu=$(normalize_url "$tu")
+        tu=$(normalize_url "$tu") # 自动补全 https://
+        
+        echo -e "\n请选择模式:"
+        echo -e " [1] 智能镜像 (资源聚合 + 内容替换 + 隐私保护)"
+        echo -e " [2] 普通反代 (直接转发，不修改内容)"
+        read -p "👉 选择 [1]: " pm
+        [ -z "$pm" ] && pm="1" # 默认为聚合镜像模式
     fi
 
-    # 生成 Nginx 代理配置
-    cat > "$sdir/nginx-proxy.conf" <<EOF
-server { 
-    listen 80; 
-    server_name localhost; 
-    location / { 
-        proxy_pass $tu; 
-        proxy_set_header Host \$host; 
-        proxy_set_header X-Real-IP \$remote_addr; 
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; 
-        proxy_ssl_server_name on; 
-    } 
-}
-EOF
+    log_info "正在生成 Nginx 配置..."
+    
+    # --- 3. 调用配置生成函数 ---
+    generate_nginx_conf "$tu" "$d" "$pm"
 
-    # 生成 Docker Compose
+    # --- 4. 生成 Docker Compose ---
+    # 注意: extra_hosts 用于让容器能访问宿主机 IP
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
   proxy:
     image: nginx:alpine
     container_name: ${d//./_}_worker
     restart: always
+    logging:
+      driver: "json-file"
+      options: {max-size: "10m", max-file: "3"}
     volumes:
       - ./nginx-proxy.conf:/etc/nginx/conf.d/default.conf
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       VIRTUAL_HOST: "$fd"
       LETSENCRYPT_HOST: "$fd"
@@ -906,10 +914,115 @@ networks:
     external: true
 EOF
 
+    # --- 5. 启动 ---
+    log_info "正在启动容器..."
     cd "$sdir" && docker compose up -d
     check_ssl_status "$d"
+    log_info "代理站点已创建: $d -> $tu"
 }
+function generate_nginx_conf() {
+    local u=$1  # 目标URL
+    local d=$2  # 你的域名
+    local m=$3  # 模式 (1=聚合镜像, 2=普通代理)
+    local h=$(echo $u | awk -F/ '{print $3}') # 提取目标 Host
+    local f="$SITES_DIR/$d/nginx-proxy.conf"
+    local loc_file="$SITES_DIR/$d/locations.temp"
 
+    # --- Nginx 头部 ---
+    # resolver 必须配置，否则无法解析动态域名
+    echo "server { listen 80; server_name localhost; resolver 8.8.8.8 1.1.1.1 valid=300s; location / {" > "$f"
+
+    if [ "$m" == "2" ]; then
+        # === 模式 2: 简单代理/内部代理 ===
+        # 仅修改 Host 头，不做内容替换
+        cat >> "$f" <<EOF
+        proxy_pass $u;
+        proxy_set_header Host $h;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_ssl_server_name on;
+EOF
+    else
+        # === 模式 1: 智能聚合镜像 (核心功能) ===
+        echo -e "${YELLOW}=== 🔗 资源聚合配置 ===${NC}"
+        echo -e "请输入该站点引用的额外资源域名 (CDN/图床/API)。"
+        echo -e "脚本将自动建立映射并替换网页源代码。"
+        echo -e "${GREEN}直接回车结束录入${NC}"
+        
+        # 1. 基础反代配置
+        cat >> "$f" <<EOF
+        proxy_pass $u;
+        proxy_set_header Host $h;
+        proxy_set_header Referer $u;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $h;
+        
+        # 强制禁止压缩，否则 sub_filter 无法替换内容
+        proxy_set_header Accept-Encoding "";
+        
+        # 隐私保护: 插入 meta 标签禁用 referrer
+        sub_filter "</head>" "<meta name='referrer' content='no-referrer'></head>";
+        
+        # 基础替换: 将目标域名替换为当前域名
+        sub_filter "$h" "$d";
+        sub_filter "https://$h" "https://$d";
+        sub_filter "http://$h" "https://$d";
+EOF
+
+        # 2. 循环录入额外资源
+        c=1
+        > "$loc_file" # 清空临时文件
+        
+        while true; do
+            read -p "资源 URL [$c] (例如 https://cdn.static.com): " re
+            [ -z "$re" ] && break
+            
+            re=$(normalize_url "$re")
+            rh=$(echo $re | awk -F/ '{print $3}') # 提取资源 Host
+            k="_res_$c"                           # 生成映射路径 key
+            
+            log_info "添加映射: $rh -> $d/$k"
+
+            # A. 在主 location 添加替换规则
+            cat >> "$f" <<EOF
+        sub_filter "$rh" "$d/$k";
+        sub_filter "https://$rh" "https://$d/$k";
+        sub_filter "http://$rh" "https://$d/$k";
+EOF
+
+            # B. 生成对应的 location 块 (追加到临时文件)
+            # 注意: rewrite 规则用于去掉 URL 中的 /_res_x/ 前缀
+            cat >> "$loc_file" <<EOF
+    location /$k/ {
+        rewrite ^/$k/(.*) /\$1 break;
+        proxy_pass $re;
+        proxy_set_header Host $rh;
+        proxy_set_header Referer $re;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $rh;
+        proxy_set_header Accept-Encoding "";
+    }
+EOF
+            ((c++))
+        done
+        
+        # 3. 结束主 location 配置
+        echo "        sub_filter_once off;" >> "$f"
+        echo "        sub_filter_types *;" >> "$f"
+    fi
+
+    # --- 闭合主 location ---
+    echo "    }" >> "$f"
+
+    # --- 追加额外资源的 location 块 (如果有) ---
+    if [ -f "$loc_file" ]; then
+        cat "$loc_file" >> "$f"
+        rm "$loc_file"
+    fi
+
+    # --- 闭合 Server 块 ---
+    echo "}" >> "$f"
+}
 function create_redirect() {
     read -p "源域名: " s
     validate_domain "$s" || return
@@ -1611,3 +1724,4 @@ while true; do
             ;; 
     esac
 done
+
