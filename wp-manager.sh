@@ -845,7 +845,548 @@ function list_sites() {
     done
     pause_prompt
 }
+function create_proxy() {
+    read -p "1. 域名: " d
+    fd="$d"
+    validate_domain "$d" || return
+    
+    read -p "2. 邮箱: " e
+    sdir="$SITES_DIR/$d"
+    
+    if [ -d "$sdir" ]; then log_error "该域名已存在"; return; fi
+    mkdir -p "$sdir"
 
+    echo -e "1. 转发到 URL (例如 https://www.google.com)"
+    echo -e "2. 转发到 IP:端口 (例如 127.0.0.1:8080)"
+    read -p "类型: " t
+
+    if [ "$t" == "2" ]; then 
+        read -p "目标 IP: " ip
+        [ -z "$ip" ] && ip="127.0.0.1"
+        read -p "目标 端口: " p
+        tu="http://$ip:$p"
+    else 
+        read -p "目标 URL: " tu
+        tu=$(normalize_url "$tu")
+    fi
+
+    # 生成 Nginx 代理配置
+    cat > "$sdir/nginx-proxy.conf" <<EOF
+server { 
+    listen 80; 
+    server_name localhost; 
+    location / { 
+        proxy_pass $tu; 
+        proxy_set_header Host \$host; 
+        proxy_set_header X-Real-IP \$remote_addr; 
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; 
+        proxy_ssl_server_name on; 
+    } 
+}
+EOF
+
+    # 生成 Docker Compose
+    cat > "$sdir/docker-compose.yml" <<EOF
+services:
+  proxy:
+    image: nginx:alpine
+    container_name: ${d//./_}_worker
+    restart: always
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/conf.d/default.conf
+    environment:
+      VIRTUAL_HOST: "$fd"
+      LETSENCRYPT_HOST: "$fd"
+      LETSENCRYPT_EMAIL: "$e"
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true
+EOF
+
+    cd "$sdir" && docker compose up -d
+    check_ssl_status "$d"
+}
+
+function create_redirect() {
+    read -p "源域名: " s
+    validate_domain "$s" || return
+    read -p "目标URL (http/https...): " t
+    t=$(normalize_url "$t")
+    read -p "邮箱: " e
+    
+    sdir="$SITES_DIR/$s"
+    if [ -d "$sdir" ]; then log_error "域名已存在"; return; fi
+    mkdir -p "$sdir"
+    
+    echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"
+    
+    cat > "$sdir/docker-compose.yml" <<EOF
+services:
+  redirector:
+    image: nginx:alpine
+    container_name: ${s//./_}_redirect
+    restart: always
+    volumes:
+      - ./redirect.conf:/etc/nginx/conf.d/default.conf
+    environment:
+      VIRTUAL_HOST: "$s"
+      LETSENCRYPT_HOST: "$s"
+      LETSENCRYPT_EMAIL: "$e"
+    networks:
+      - proxy-net
+networks:
+  proxy-net:
+    external: true
+EOF
+    cd "$sdir" && docker compose up -d
+    check_ssl_status "$s"
+}
+
+function repair_proxy() {
+    ls -1 "$SITES_DIR"
+    read -p "请输入要修复/修改的域名: " d
+    sdir="$SITES_DIR/$d"
+    
+    if [ ! -d "$sdir" ]; then log_error "目录不存在"; return; fi
+    if [ ! -f "$sdir/nginx-proxy.conf" ]; then log_error "这不是一个反向代理站点"; return; fi
+
+    read -p "新的目标 URL: " tu
+    tu=$(normalize_url "$tu")
+    
+    cat > "$sdir/nginx-proxy.conf" <<EOF
+server { 
+    listen 80; 
+    server_name localhost; 
+    location / { 
+        proxy_pass $tu; 
+        proxy_set_header Host \$host; 
+        proxy_set_header X-Real-IP \$remote_addr; 
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; 
+        proxy_ssl_server_name on; 
+    } 
+}
+EOF
+    cd "$sdir" && docker compose restart
+    log_info "反代配置已更新"
+    pause_prompt
+}
+function db_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 数据库管理 ===${NC}"
+        echo " 1. 导出数据库 (Dump)"
+        echo " 2. 导入数据库 (Import)"
+        echo " 0. 返回"
+        read -p "选: " c
+        case $c in 
+            0) return;; 
+            1) 
+                ls -1 "$SITES_DIR"
+                read -p "域名: " d
+                s="$SITES_DIR/$d"
+                if [ ! -f "$s/docker-compose.yml" ]; then log_error "配置文件不存在"; pause_prompt; continue; fi
+                
+                pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml" | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
+                if [ -z "$pwd" ]; then log_error "未找到数据库密码，可能非数据库站点"; pause_prompt; continue; fi
+                
+                log_info "正在导出..."
+                docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$s/${d}_dump.sql"
+                
+                if [ -s "$s/${d}_dump.sql" ]; then
+                    log_info "导出成功: $s/${d}_dump.sql"
+                else
+                    log_error "导出失败，文件为空"
+                fi
+                pause_prompt;; 
+            2) 
+                ls -1 "$SITES_DIR"
+                read -p "域名: " d
+                read -p "SQL文件绝对路径: " f
+                s="$SITES_DIR/$d"
+                
+                if [ ! -f "$f" ]; then log_error "SQL文件不存在"; pause_prompt; continue; fi
+                
+                pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml" | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
+                
+                log_info "正在导入 (这可能需要几分钟)..."
+                cat "$f" | docker compose -f "$s/docker-compose.yml" exec -T db mysql -u root -p"$pwd"
+                
+                log_info "导入命令执行完毕"
+                pause_prompt;; 
+        esac
+    done 
+}
+
+function backup_restore_ops() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 备份与还原 (安全版) ===${NC}"
+        echo " 1. 创建备份"
+        echo " 2. 还原备份"
+        echo " 0. 返回"
+        read -p "选: " b
+        case $b in 
+            0) return;; 
+            1) 
+                ls -1 "$SITES_DIR"
+                read -p "域名: " d
+                s="$SITES_DIR/$d"
+                [ ! -d "$s" ] && continue
+                
+                bd="$s/backups/$(date +%Y%m%d%H%M)"
+                mkdir -p "$bd"
+                
+                log_info "开始备份 $d ..."
+                
+                # 1. 尝试备份数据库
+                if [ -f "$s/docker-compose.yml" ]; then
+                    pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml" | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
+                    if [ ! -z "$pwd" ]; then
+                         docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql" || echo "DB Dump failed or not a DB site"
+                    fi
+                fi
+                
+                # 2. 备份文件 (WordPress Content)
+                wp_c=$(docker ps --format '{{.Names}}' | grep "${d//./_}_app")
+                if [ ! -z "$wp_c" ]; then
+                    # 这是一个 WordPress 站点，使用临时容器打包卷数据
+                    vol_name="${d//./_}_wp_data"
+                    docker run --rm -v $vol_name:/volume -v "$bd":/backup alpine tar czf /backup/files.tar.gz -C /volume .
+                else
+                    # 普通站点，直接打包目录
+                    tar czf "$bd/files.tar.gz" -C "$s" .
+                fi
+                
+                # 3. 备份配置
+                cp "$s/"*.conf "$s/docker-compose.yml" "$bd/" 2>/dev/null
+                
+                log_info "备份完成: $bd"
+                pause_prompt;; 
+            2) 
+                ls -1 "$SITES_DIR"
+                read -p "域名: " d
+                s="$SITES_DIR/$d"
+                bd="$s/backups"
+                
+                if [ ! -d "$bd" ]; then log_error "该站点没有备份记录"; pause_prompt; continue; fi
+                
+                echo "--- 可用备份 ---"
+                ls -1 "$bd"
+                read -p "请输入备份目录名 (留空使用最新): " n
+                if [ -z "$n" ]; then n=$(ls -t "$bd" | head -1); fi
+                bp="$bd/$n"
+                
+                if [ ! -d "$bp" ]; then log_error "备份不存在"; pause_prompt; continue; fi
+                
+                echo -e "${RED}⚠️  警告: 此操作将覆盖当前站点数据！${NC}"
+                read -p "确认还原? (yes/no): " c
+                [ "$c" != "yes" ] && continue
+                
+                cd "$s" && docker compose down
+                
+                # 还原文件
+                if [ -f "$bp/files.tar.gz" ]; then
+                     vol_name="${d//./_}_wp_data"
+                     # 检查是否为 Docker Volume
+                     if docker volume ls -q | grep -q "$vol_name"; then
+                         # 清空卷并解压
+                         docker run --rm -v $vol_name:/volume alpine sh -c "rm -rf /volume/*"
+                         docker run --rm -v $vol_name:/volume -v "$bp":/backup alpine tar xzf /backup/files.tar.gz -C /volume
+                     else
+                         # 普通解压
+                         tar xzf "$bp/files.tar.gz" -C "$s"
+                     fi
+                fi
+                
+                # 启动 DB 准备还原 SQL
+                docker compose up -d db 2>/dev/null
+                if [ -f "$bp/db.sql" ]; then
+                    log_info "等待数据库启动..."
+                    sleep 15
+                    pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
+                    cat "$bp/db.sql" | docker compose exec -T db mysql -u root -p"$pwd"
+                fi
+                
+                docker compose up -d
+                log_info "还原完成"
+                pause_prompt;; 
+        esac
+    done 
+}
+function wp_toolbox() {
+    while true; do
+        clear; echo -e "${YELLOW}=== 🛠️ WP-CLI 工具箱 ===${NC}"
+        ls -1 "$SITES_DIR"
+        echo "----------------"
+        read -p "输入域名 (0返回): " d
+        [ "$d" == "0" ] && return
+        
+        sdir="$SITES_DIR/$d"
+        if [ ! -f "$sdir/docker-compose.yml" ]; then log_error "无配置文件"; pause_prompt; continue; fi
+        
+        # 自动获取容器名，不依赖固定命名
+        cn=$(docker compose -f "$sdir/docker-compose.yml" ps -q wordpress)
+        if [ -z "$cn" ]; then log_error "未找到运行中的 WordPress 容器 (请先启动站点)"; pause_prompt; continue; fi
+        
+        echo -e "当前操作站点: ${CYAN}$d${NC}"
+        echo " 1. 重置 Admin 密码"
+        echo " 2. 查看插件列表"
+        echo " 3. 禁用所有插件 (救砖)"
+        echo " 4. 清理对象缓存"
+        echo " 5. 修复文件权限 (chown)"
+        echo " 6. 数据库搜索替换 (换域名)"
+        read -p "选: " op
+        
+        case $op in
+            1) 
+                read -p "新密码: " np
+                docker exec -u www-data "$cn" wp user update admin --user_pass="$np" && log_info "密码已修改"
+                pause_prompt;;
+            2) 
+                docker exec -u www-data "$cn" wp plugin list
+                pause_prompt;;
+            3) 
+                docker exec -u www-data "$cn" wp plugin deactivate --all && log_info "所有插件已禁用"
+                pause_prompt;;
+            4) 
+                docker exec -u www-data "$cn" wp cache flush && log_info "缓存已清理"
+                pause_prompt;;
+            5) 
+                log_info "正在修复权限..."
+                docker exec -u root "$cn" chown -R www-data:www-data /var/www/html
+                log_info "完成"
+                pause_prompt;;
+            6) 
+                read -p "旧域名 (例如 old.com): " od
+                read -p "新域名 (例如 new.com): " nd
+                echo "正在执行全库替换..."
+                docker exec -u www-data "$cn" wp search-replace "$od" "$nd" --all-tables
+                log_info "替换完成"
+                pause_prompt;;
+        esac
+    done
+}
+
+function change_domain() {
+    ls -1 "$SITES_DIR"
+    read -p "旧域名: " o
+    if [ ! -d "$SITES_DIR/$o" ]; then log_error "旧域名不存在"; return; fi
+    
+    read -p "新域名: " n
+    validate_domain "$n" || return
+    
+    log_info "正在停机迁移..."
+    cd "$SITES_DIR/$o" && docker compose down
+    
+    cd "$SITES_DIR"
+    mv "$o" "$n"
+    cd "$n"
+    
+    # 替换配置文件中的域名
+    sed -i "s/$o/$n/g" docker-compose.yml
+    [ -f "nginx-proxy.conf" ] && sed -i "s/$o/$n/g" nginx-proxy.conf
+    
+    docker compose up -d
+    
+    # 如果是 WordPress，需要替换数据库中的域名
+    if grep -q "image: .*wordpress" docker-compose.yml; then
+        log_info "检测到 WordPress，正在执行数据库域名替换..."
+        sleep 5 # 等待 DB 启动
+        wp_c=$(docker compose ps -q wordpress)
+        # 使用临时 CLI 容器或直接 exec
+        docker exec -u www-data "$wp_c" wp search-replace "$o" "$n" --all-tables --skip-columns=guid
+    fi
+    
+    # 重载网关
+    cd "$GATEWAY_DIR" && docker compose restart nginx-proxy
+    
+    log_info "迁移完成: $o -> $n"
+    pause_prompt
+}
+
+function component_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 🆙 组件版本切换 ===${NC}"
+        ls -1 "$SITES_DIR"
+        echo "----------------"
+        read -p "域名 (0返回): " d
+        [ "$d" == "0" ] && return
+        
+        sdir="$SITES_DIR/$d"
+        if [ ! -f "$sdir/docker-compose.yml" ]; then continue; fi
+        
+        echo " 1. 切换 PHP 版本 (7.4 / 8.0 / 8.2)"
+        echo " 2. 切换 Redis 版本"
+        echo " 0. 返回"
+        read -p "选项: " op
+        
+        case $op in 
+            0) break;; 
+            1) 
+                echo "1. PHP 7.4"
+                echo "2. PHP 8.0"
+                echo "3. PHP 8.2"
+                read -p "选: " p
+                case $p in 
+                    1) t="php7.4-fpm-alpine";; 
+                    2) t="php8.0-fpm-alpine";; 
+                    3) t="php8.2-fpm-alpine";; 
+                    *) echo "无效"; continue;;
+                esac
+                sed -i "s|image: wordpress:.*|image: wordpress:$t|g" "$sdir/docker-compose.yml"
+                cd "$sdir" && docker compose up -d
+                log_info "PHP 版本已更新"
+                pause_prompt;; 
+            2) 
+                echo "1. Redis 6"
+                echo "2. Redis 7"
+                read -p "选: " r
+                case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; esac
+                sed -i "s|image: redis:.*|image: redis:$rt|g" "$sdir/docker-compose.yml"
+                cd "$sdir" && docker compose up -d
+                log_info "Redis 版本已更新"
+                pause_prompt;; 
+        esac
+    done 
+}
+function manage_hotlink() { 
+    while true; do 
+        clear
+        echo "1. 开启防盗链"
+        echo "2. 关闭防盗链"
+        echo "0. 返回"
+        read -p "选: " h
+        
+        if [ "$h" == "0" ]; then return; fi
+        
+        ls -1 "$SITES_DIR"
+        read -p "域名: " d
+        s="$SITES_DIR/$d"
+        
+        case $h in
+        1) 
+            read -p "允许的白名单域名 (空格分隔, 如 google.com baidu.com): " w
+            # 更新 Nginx 配置添加 referer 检查
+            sed -i '/location ~\* \\.(gif|jpg|png|webp)/d' "$s/nginx.conf" # 先删除旧规则防止重复
+            
+            # 插入新规则 (这里比较复杂，简化为覆盖 nginx.conf 的关键部分，建议直接重写配置文件更安全)
+            # 为了稳妥，这里重新生成 nginx.conf (带有防盗链)
+            cat > "$s/nginx.conf" <<EOF
+server { 
+    listen 80; 
+    server_name localhost; 
+    root /var/www/html; 
+    index index.php; 
+    include /etc/nginx/waf.conf; 
+    client_max_body_size 512M; 
+    
+    location ~* \.(gif|jpg|png|webp)\$ { 
+        valid_referers none blocked server_names $d *.$d $w; 
+        if (\$invalid_referer) { return 403; } 
+        try_files \$uri \$uri/ /index.php?\$args; 
+    } 
+    
+    location / { try_files \$uri \$uri/ /index.php?\$args; } 
+    location ~ \.php\$ { 
+        try_files \$uri =404; 
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$; 
+        fastcgi_pass wordpress:9000; 
+        fastcgi_index index.php; 
+        include fastcgi_params; 
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; 
+        fastcgi_param PATH_INFO \$fastcgi_path_info; 
+    } 
+}
+EOF
+            log_info "防盗链已开启"
+            ;;
+        2) 
+            # 恢复默认 Nginx 配置
+            cat > "$s/nginx.conf" <<EOF
+server { 
+    listen 80; 
+    server_name localhost; 
+    root /var/www/html; 
+    index index.php; 
+    include /etc/nginx/waf.conf; 
+    client_max_body_size 512M; 
+    location / { try_files \$uri \$uri/ /index.php?\$args; } 
+    location ~ \.php\$ { 
+        try_files \$uri =404; 
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$; 
+        fastcgi_pass wordpress:9000; 
+        fastcgi_index index.php; 
+        include fastcgi_params; 
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; 
+        fastcgi_param PATH_INFO \$fastcgi_path_info; 
+    } 
+}
+EOF
+            log_info "防盗链已关闭"
+            ;;
+        esac
+        
+        cd "$s" && docker compose restart nginx
+        pause_prompt
+    done 
+}
+
+function sys_monitor() {
+    while true; do
+        clear; echo -e "${YELLOW}=== 🖥️ 系统监控 ===${NC}"
+        echo -e "CPU负载: $(uptime | awk -F'average:' '{print $2}')"
+        echo -e "内存: $(free -h | grep Mem | awk '{print $3 "/" $2}')"
+        echo -e "磁盘: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+        
+        if command -v ss >/dev/null; then
+            echo -e "TCP连接: $(ss -s | grep TCP | head -1)"
+        else
+            echo -e "TCP连接: $(netstat -an | grep ESTABLISHED | wc -l)"
+        fi
+        
+        read -t 5 -p "回车刷新，0 返回 > " o
+        [ "$o" == "0" ] && return
+    done
+}
+
+function log_manager() { 
+    while true; do 
+        clear; echo -e "${YELLOW}=== 📜 日志管理 ===${NC}"
+        echo " 1. 查看最近日志"
+        echo " 2. 清空日志"
+        echo " 3. 配置自动清理 (Crontab)"
+        echo " 0. 返回"
+        read -p "选: " l
+        case $l in 
+            0) return;; 
+            1) tail -n 50 "$LOG_FILE"; pause_prompt;; 
+            2) echo "" > "$LOG_FILE"; echo "已清空"; pause_prompt;; 
+            3) 
+                (crontab -l 2>/dev/null; echo "0 3 * * * find $BASE_DIR -name '*.log' -mtime +7 -delete") | crontab -
+                log_info "已配置每周自动清理旧日志"
+                pause_prompt;; 
+        esac
+    done 
+}
+
+function uninstall_cluster() { 
+    echo -e "${RED}⚠️  危险: 此操作将删除所有站点和数据！${NC}"
+    echo "请输入 DELETE 确认"
+    read -p "> " c
+    if [ "$c" == "DELETE" ]; then
+        log_info "正在停止所有服务..."
+        ls "$SITES_DIR" | while read d; do 
+            cd "$SITES_DIR/$d" && docker compose down -v
+        done
+        cd "$GATEWAY_DIR" && docker compose down -v
+        docker network rm proxy-net 2>/dev/null
+        
+        rm -rf "$BASE_DIR" /usr/bin/web
+        echo "已卸载完成"
+        exit 0
+    fi
+}
 # ================= 7. 主菜单 =================
 function show_menu() {
     clear
