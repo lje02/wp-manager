@@ -558,6 +558,116 @@ function traffic_manager() {
     done 
 }
 
+# ================= 🆕 动态云端应用商店 =================
+
+# 仓库基础配置 (请根据实际情况修改 URL)
+# 确保这是 raw 文件的访问地址前缀
+REPO_ROOT="https://raw.githubusercontent.com/lje02/wp-manager/main"
+
+function install_remote_app() {
+    local app_key=$1
+    local app_name=$2
+    
+    echo "-----------------------------------------"
+    echo -e "正在准备安装: ${GREEN}$app_name${NC}"
+    read -p "请输入域名 (例如 $app_key.example.com): " domain
+    if [ -z "$domain" ]; then echo -e "${RED}域名不能为空${NC}"; return; fi
+
+    # 1. 冲突检测与目录创建
+    pname=$(echo $domain | tr '.' '_')
+    if ! check_container_conflict "$pname"; then pause_prompt; return; fi
+    
+    sdir="$SITES_DIR/$domain"
+    if [ -d "$sdir" ]; then echo -e "${RED}目录已存在: $sdir${NC}"; pause_prompt; return; fi
+    mkdir -p "$sdir"
+
+    # 2. 下载模板 (路径规则：apps/key/template.yml)
+    template_url="$REPO_ROOT/apps/$app_key/template.yml"
+    target_file="$sdir/docker-compose.yml"
+    
+    echo -e "${YELLOW}>>> 正在下载配置模板...${NC}"
+    if ! curl -f -sL "$template_url" -o "$target_file"; then
+        echo -e "${RED}❌ 下载失败！${NC}"
+        echo "请求地址: $template_url"
+        rm -rf "$sdir"
+        pause_prompt; return
+    fi
+
+    # 3. 渲染模板
+    echo -e "${YELLOW}>>> 正在配置参数...${NC}"
+    email="admin@localhost.com"
+    sed -i "s|{{DOMAIN}}|$domain|g" "$target_file"
+    sed -i "s|{{EMAIL}}|$email|g" "$target_file"
+    sed -i "s|{{APP_NAME}}|$pname|g" "$target_file"
+
+    # 4. 启动
+    cd "$sdir" && docker compose up -d
+    write_log "Installed Cloud App ($app_key) on $domain"
+    echo -e "${GREEN}✔ $app_name 部署成功！${NC}"
+    check_ssl_status "$domain"
+}
+
+function app_store() {
+    # 依赖检查：我们需要 jq 来解析 JSON
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${RED}错误: 未安装 jq 组件，请先运行脚本依赖检查。${NC}"
+        pause_prompt; return
+    fi
+
+    local list_file="/tmp/wp_apps_list.json"
+    local list_url="$REPO_ROOT/apps.json"
+
+    while true; do
+        clear
+        echo -e "${YELLOW}=== ☁️ 动态应用商店 (Dynamic Store) ===${NC}"
+        echo -e "正在从云端获取最新应用列表..."
+        
+        # 1. 下载应用列表 JSON
+        if ! curl -sL "$list_url" -o "$list_file"; then
+            echo -e "${RED}❌ 获取列表失败，请检查网络或仓库地址。${NC}"
+            pause_prompt; return
+        fi
+
+        # 检查 JSON 是否合法
+        if ! jq -e . "$list_file" >/dev/null 2>&1; then
+             echo -e "${RED}❌ 获取的数据格式错误。${NC}"
+             pause_prompt; return
+        fi
+
+        echo "-----------------------------------------"
+        
+        # 2. 使用 jq 动态生成菜单
+        # 逻辑：读取数组，输出 "序号. 名称 (描述)"
+        jq -r 'to_entries[] | " \(.key + 1). " + .value.name + " \t- " + .value.description' "$list_file"
+        
+        echo " 0. 返回上一级"
+        echo "-----------------------------------------"
+        
+        read -p "请选择应用编号: " idx
+        
+        if [ "$idx" == "0" ]; then return; fi
+        
+        # 校验输入是否为数字
+        if ! [[ "$idx" =~ ^[0-9]+$ ]]; then continue; fi
+
+        # 3. 根据序号提取 Key 和 Name
+        # 数组下标 = 序号 - 1
+        array_index=$((idx - 1))
+        
+        # 使用 jq 提取对应下标的数据
+        selected_key=$(jq -r ".[$array_index].key // empty" "$list_file")
+        selected_name=$(jq -r ".[$array_index].name // empty" "$list_file")
+
+        if [ -z "$selected_key" ] || [ "$selected_key" == "null" ]; then
+            echo -e "${RED}无效的选择${NC}"
+            sleep 1
+        else
+            # 调用安装函数
+            install_remote_app "$selected_key" "$selected_name"
+        fi
+    done
+}
+
 # --- 基础操作函数 ---
 function init_gateway() { local m=$1; if ! docker network ls|grep -q proxy-net; then docker network create proxy-net >/dev/null; fi; mkdir -p "$GATEWAY_DIR"; cd "$GATEWAY_DIR"; echo "client_max_body_size 1024m;" > upload_size.conf; echo "proxy_read_timeout 600s;" >> upload_size.conf; echo "proxy_send_timeout 600s;" >> upload_size.conf; cat > docker-compose.yml <<EOF
 services:
@@ -659,6 +769,7 @@ function show_menu() {
     echo " 1. 部署 WordPress 新站"
     echo " 2. 反向代理 (支持多源聚合)"
     echo " 3. 域名重定向 (301)"
+    echo -e " 18. ${GREEN}应用商店 (App Store)${NC}"
     echo ""
     echo -e "${YELLOW}[站点运维]${NC}"
     echo " 4. 查看站点列表"
@@ -696,7 +807,8 @@ while true; do
         u|U) update_script;; 
         1) create_site;; 
         2) create_proxy;; 
-        3) create_redirect;; 
+        3) create_redirect;;
+        18) app_store;;
         4) list_sites;; 
         5) container_ops;; 
         6) delete_site;; 
