@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9 (快捷指令: web)"
+VERSION="V9 (Shortcut: web)"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
@@ -532,7 +532,7 @@ function port_manager() {
         case $f in 
             0) return;; 
             1) if [ "$FW" == "UFW" ]; then ufw status; else firewall-cmd --list-ports; fi; pause_prompt;; 
-            2) read -p "输入端口 (如 80 443): " ports; echo "1.开放 2.关闭"; read -p "选: " a; for p in $ports; do if command -v ufw >/dev/null; then [ "$a" == "1" ] && ufw allow $p/tcp || (ufw delete allow $p/tcp >/dev/null 2>&1 && echo "已关闭 $p" || echo "端口 $p 未开启，无需关闭") ; else ac=$([ "$a" == "1" ] && echo add || echo remove); firewall-cmd --zone=public --${ac}-port=$p/tcp --permanent; fi; done; command -v firewall-cmd >/dev/null && firewall-cmd --reload; echo "完成"; pause_prompt;; 
+            2) read -p "输入端口 (如 80 443): " ports; echo "1.开放 2.关闭"; read -p "选: " a; for p in $ports; do if command -v ufw >/dev/null; then [ "$a" == "1" ] && ufw allow $p/tcp || ufw delete allow $p/tcp; else ac=$([ "$a" == "1" ] && echo add || echo remove); firewall-cmd --zone=public --${ac}-port=$p/tcp --permanent; fi; done; command -v firewall-cmd >/dev/null && firewall-cmd --reload; echo "完成"; pause_prompt;; 
             3) echo "1.开启防DOS 2.关闭"; read -p "选: " d; if [ "$d" == "1" ]; then echo "limit_req_zone \$binary_remote_addr zone=one:10m rate=10r/s; limit_conn_zone \$binary_remote_addr zone=addr:10m;" > "$FW_DIR/dos_zones.conf"; mkdir -p "$GATEWAY_DIR/vhost"; echo "limit_req zone=one burst=15 nodelay; limit_conn addr 15;" > "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker compose up -d >/dev/null 2>&1 && docker exec gateway_proxy nginx -s reload; echo "已开启"; else rm -f "$FW_DIR/dos_zones.conf" "$GATEWAY_DIR/vhost/default"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "已关闭"; fi; pause_prompt;; 
             4) echo "1.全开 2.全关"; read -p "选: " m; if [ "$m" == "1" ]; then [ -x "$(command -v ufw)" ] && ufw default allow incoming || firewall-cmd --set-default-zone=trusted; else if [ -x "$(command -v ufw)" ]; then ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw default deny incoming; else firewall-cmd --permanent --add-service={ssh,http,https}; firewall-cmd --set-default-zone=drop; firewall-cmd --reload; fi; fi; echo "完成"; pause_prompt;; 
         esac
@@ -600,8 +600,8 @@ EOF
     cd "$sdir" && docker compose up -d; check_ssl_status "$fd"; write_log "Created site $fd"
 }
 function create_proxy() {
-    read -p "1. 域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
-    echo -e "1.URL 2.IP:端口"; read -p "类型: " t; if [ "$t" == "2" ]; then read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"; read -p "端口: " p; tu="http://$ip:$p"; pm="2"; else read -p "URL: " tu; tu=$(normalize_url "$tu"); echo "1.多源聚合 2.普通代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"; fi
+    read -p "1. 已解释到本机域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
+    echo -e "1.域名模式 2.IP:端口"; read -p "类型: " t; if [ "$t" == "2" ]; then read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"; read -p "端口: " p; tu="http://$ip:$p"; pm="2"; else read -p "URL: " tu; tu=$(normalize_url "$tu"); echo "1.多源聚合 2.普通代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"; fi
     generate_nginx_conf "$tu" "$d" "$pm"
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
@@ -645,20 +645,20 @@ cd "$s" && docker compose restart nginx; echo "OK";; 2) ls -1 "$SITES_DIR"; read
 server { listen 80; server_name localhost; root /var/www/html; index index.php; include /etc/nginx/waf.conf; client_max_body_size 512M; location / { try_files \$uri \$uri/ /index.php?\$args; } location ~ \.php$ { try_files \$uri =404; fastcgi_split_path_info ^(.+\.php)(/.+)$; fastcgi_pass wordpress:9000; fastcgi_index index.php; include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; fastcgi_param PATH_INFO \$fastcgi_path_info; fastcgi_read_timeout 600; } }
 EOF
 cd "$s" && docker compose restart nginx; echo "OK";; esac; pause_prompt; done; }
-function backup_restore_ops() { while true; do clear; echo "1.Backup 2.Restore 0.Back"; read -p "Sel: " b; case $b in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; [ ! -d "$s" ] && continue; bd="$s/backups/$(date +%Y%m%d%H%M)"; mkdir -p "$bd"; cd "$s"; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql"; wp_c=$(docker compose ps -q wordpress); docker run --rm --volumes-from $wp_c -v "$bd":/backup alpine tar czf /backup/files.tar.gz /var/www/html/wp-content; cp *.conf docker-compose.yml "$bd/"; echo "Backup: $bd"; write_log "Backup $d"; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; bd="$s/backups"; [ ! -d "$bd" ] && continue; lt=$(ls -t "$bd"|head -1); if [ ! -z "$lt" ]; then echo "最新: $lt"; read -p "使用最新? (y/n): " u; [ "$u" == "y" ] && n="$lt"; fi; if [ -z "$n" ]; then ls -1 "$bd"; read -p "Name: " n; fi; bp="$bd/$n"; [ ! -d "$bp" ] && continue; cd "$s" && docker compose down; vol=$(docker volume ls -q|grep "${d//./_}_wp_data"); docker run --rm -v $vol:/var/www/html -v "$bp":/backup alpine tar xzf /backup/files.tar.gz -C /; docker compose up -d db; sleep 15; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysql -u root -p"$pwd" < "$bp/db.sql"; docker compose up -d; echo "Restored"; write_log "Restored $d"; pause_prompt;; esac; done; }
+function backup_restore_ops() { while true; do clear; echo "1.Backup备份 2.Restore还原 0.Back返回"; read -p "Sel: " b; case $b in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; [ ! -d "$s" ] && continue; bd="$s/backups/$(date +%Y%m%d%H%M)"; mkdir -p "$bd"; cd "$s"; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql"; wp_c=$(docker compose ps -q wordpress); docker run --rm --volumes-from $wp_c -v "$bd":/backup alpine tar czf /backup/files.tar.gz /var/www/html/wp-content; cp *.conf docker-compose.yml "$bd/"; echo "Backup: $bd"; write_log "Backup $d"; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; bd="$s/backups"; [ ! -d "$bd" ] && continue; lt=$(ls -t "$bd"|head -1); if [ ! -z "$lt" ]; then echo "最新: $lt"; read -p "使用最新? (y/n): " u; [ "$u" == "y" ] && n="$lt"; fi; if [ -z "$n" ]; then ls -1 "$bd"; read -p "Name: " n; fi; bp="$bd/$n"; [ ! -d "$bp" ] && continue; cd "$s" && docker compose down; vol=$(docker volume ls -q|grep "${d//./_}_wp_data"); docker run --rm -v $vol:/var/www/html -v "$bp":/backup alpine tar xzf /backup/files.tar.gz -C /; docker compose up -d db; sleep 15; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysql -u root -p"$pwd" < "$bp/db.sql"; docker compose up -d; echo "Restored"; write_log "Restored $d"; pause_prompt;; esac; done; }
 # [修改点] 卸载时清理 /usr/bin/web
 function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/web; echo "已卸载"); }
 
 # ================= 4. 菜单显示函数 =================
 function show_menu() {
     clear
-    echo -e "${GREEN}=== Docker web 集群管理 ($VERSION) ===${NC}"
-    echo -e "${CYAN}===请勿在生产环境中使用===${NC}"
+    echo -e "${GREEN}===Docker web管理 ($VERSION) ===${NC}"
+    echo -e "${CYAN}===请勿在生产环境中使用 快捷键web===${NC}"
     echo "-----------------------------------------"
     echo -e "${YELLOW}[新建站点]${NC}"
     echo " 1. 部署 WordPress 新站"
-    echo " 2. 新建 反向代理 (支持多源聚合)"
-    echo " 3. 新建 域名重定向 (301)"
+    echo " 2. 反向代理 (支持多源聚合)"
+    echo " 3. 域名重定向 (301)"
     echo ""
     echo -e "${YELLOW}[站点运维]${NC}"
     echo " 4. 查看站点列表"
