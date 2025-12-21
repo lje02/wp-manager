@@ -710,8 +710,8 @@ EOF
     cd "$sdir" && docker compose up -d; check_ssl_status "$fd"; write_log "Created site $fd"
 }
 function create_proxy() {
-    read -p "1. 已解释到本机域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
-    echo -e "1.域名模式 2.IP:端口"; read -p "类型: " t; if [ "$t" == "2" ]; then read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"; read -p "端口: " p; tu="http://$ip:$p"; pm="2"; else read -p "URL: " tu; tu=$(normalize_url "$tu"); echo "1.多源聚合 2.普通代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"; fi
+    read -p "1. 已解析到本机域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
+    echo -e "1.域名模式 2.IP:端口"; read -p "类型: " t; if [ "$t" == "2" ]; then read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"; read -p "端口: " p; tu="http://$ip:$p"; pm="2"; else read -p "目标URL: " tu; tu=$(normalize_url "$tu"); echo "1.多源聚合 2.普通代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"; fi
     generate_nginx_conf "$tu" "$d" "$pm"
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
