@@ -1,30 +1,46 @@
-# 🐳 WordPress Docker 集群一键管家 
 
-这是一个专为 VPS 设计的轻量级运维脚本，旨在帮助用户通过 Docker 快速构建、管理和保护 WordPress 站点。
+---
 
-## ✨ 核心亮点
+Docker-Web
+轻量级 Docker 运维管理工具，支持 WordPress 集群部署、反向代理、应用商店、安全防护、备份还原，并集成 Telegram 通知 和 WAF规则。
 
-* **🚀 极速部署**：一键自动化安装 Docker、WordPress、MySQL 8.0、Redis。
-* **🔒 自动 HTTPS**：自动申请 Let's Encrypt / ZeroSSL 证书，支持到期监控与自动续签。
-* **⚡ 性能优化**：内置 Redis 对象缓存配置，一键解除 Nginx/PHP 上传限制 (支持 1GB+)。
-* **🛡️ 安全防御**：集成防火墙管理（端口/IP黑白名单）、防 DOS 攻击、防盗链设置。
-* **🔄 反向代理**：内置强大的反代功能，支持外部资源聚合（解决混合内容/防盗链问题）。
-* **💾 数据无忧**：支持数据库独立导出、整站打包备份与秒级还原。
-* **⌨️ 全局指令**：安装后输入 `wp` 即可随时唤醒管理面板。
+---
 
-## 🖥️ 一键安装
+功能亮点
+• WordPress一键部署：自动配置 Nginx + SSL，支持 PHP/MySQL/Redis 版本切换
+• 应用商店：云端安装 Portainer、Alist 等热门应用
+• 安全防护：防火墙、Fail2Ban、WAF规则、主机安全审计
+• Telegram Bot：资源报警、指令交互
+• 运维工具：容器监控、日志查看、WP-CLI工具箱、备份还原
 
-无需复杂的配置，使用 SSH 连接服务器（需要 Root 权限）后执行以下命令：
+---
 
-curl -O https://cdn.jsdelivr.net/gh/lje02/wp-manager@main/wp-manager.sh && chmod +x wp-manager.sh && bash wp-manager.sh
+安装
+curl -sL https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh -o wp-manager.sh
+chmod +x wp-manager.sh
+./wp-manager.sh
 
-🛠️ 常用功能
-脚本安装后，会自动注册快捷指令。以后只需输入 wp 即可打开菜单。
-• 初始化网关：首次使用必须执行，建立 Nginx 流量入口。
-• 创建新站：自动配置数据库、Redis 和 Nginx 规则。
-• 修复反代：如果反向代理的图片加载失败，可用此功能修复。
-• 备份/还原：在迁移服务器或进行重大修改前，建议先备份。
-📋 环境要求
-• 系统：Ubuntu / Debian / CentOS / Alpine (推荐 Debian/Ubuntu)
-• 架构：x86_64 / amd64 / arm64
-• 权限：Root 用户
+首次运行会自动安装依赖并初始化网关，创建快捷命令 wp。
+
+---
+
+快速使用
+• 部署 WordPress：菜单 1
+• 应用商店安装：菜单 4
+• 查看站点：菜单 10
+• 备份还原：菜单 23
+• 安全防御中心：菜单 30
+• Telegram通知：菜单 31
+
+---
+
+更新与卸载
+• 更新脚本：wp u
+• 卸载脚本：wp x（输入 DELETE 确认）
+
+---
+
+注意事项
+• 系统要求：Linux，需 root 权限
+• 确保 80/443 端口未被占用
+• 建议结合防火墙和 Fail2Ban，避免公网暴露
