@@ -604,9 +604,29 @@ function install_remote_app() {
     pname=$(echo $domain | tr '.' '_')
     if ! check_container_conflict "$pname"; then pause_prompt; return; fi
     
-    sdir="$SITES_DIR/$domain"
-    if [ -d "$sdir" ]; then echo -e "${RED}目录已存在: $sdir${NC}"; pause_prompt; return; fi
+       sdir="$SITES_DIR/$domain"
+    
+    # [修改点] 智能目录检查 ===========================
+    if [ -d "$sdir" ]; then
+        echo -e "${RED}⚠️  检测到目录已存在: $sdir${NC}"
+        echo -e "${YELLOW}这通常意味着之前安装过，或者卸载不彻底。${NC}"
+        read -p "是否删除旧目录并强制重装? (y/n): " confirm_del
+        
+        if [ "$confirm_del" == "y" ]; then
+            echo -e "${YELLOW}>>> 正在清理旧文件...${NC}"
+            # 先尝试停止可能存在的容器（双重保险）
+            cd "$sdir" 2>/dev/null && docker compose down >/dev/null 2>&1
+            # 删除目录
+            rm -rf "$sdir"
+            echo -e "${GREEN}✔ 旧目录已清理${NC}"
+        else
+            echo "❌ 操作已取消"; pause_prompt; return
+        fi
+    fi
+    # ===============================================
+    
     mkdir -p "$sdir"
+
 
     # 2. 下载模板 (路径规则：apps/key/template.yml)
     template_url="$REPO_ROOT/apps/$app_key/template.yml"
@@ -632,6 +652,14 @@ function install_remote_app() {
     write_log "Installed Cloud App ($app_key) on $domain"
     echo -e "${GREEN}✔ $app_name 部署成功！${NC}"
     check_ssl_status "$domain"
+
+    echo -e "${YELLOW}------------------------------------------------${NC}"
+    echo -e "提示: 如果该应用需要初始密码 (如 Alist, Portainer)，"
+    echo -e "请运行以下命令查看日志:"
+    echo -e "${CYAN}docker logs $pname_app${NC}"
+    echo -e "${YELLOW}------------------------------------------------${NC}"
+    
+    pause_prompt
 }
 
 function app_store() {
