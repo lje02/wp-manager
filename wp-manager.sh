@@ -74,6 +74,33 @@ function check_dependencies() {
         write_log "Installed Docker"
     fi
 }
+# [补全] 容器冲突检测函数
+function check_container_conflict() {
+    local base_name=$1
+    local has_conflict=0
+    
+    # 检测常见后缀的容器是否存在 (_app, _db, _redis, _nginx, _worker)
+    conflict_list=$(docker ps -a --format '{{.Names}}' | grep -E "^${base_name}_(app|db|redis|nginx|worker|redirect)$")
+    
+    if [ ! -z "$conflict_list" ]; then
+        echo -e "${RED}⚠️  检测到命名冲突！以下容器已存在 (可能是之前的残留):${NC}"
+        echo "$conflict_list"
+        echo "-----------------------------------------"
+        echo -e "${YELLOW}如果不清理，部署将失败。${NC}"
+        read -p "是否强制删除这些旧容器? (y/n): " confirm
+        
+        if [ "$confirm" == "y" ]; then
+            echo -e "${YELLOW}>>> 正在清理旧容器...${NC}"
+            echo "$conflict_list" | xargs docker rm -f
+            echo -e "${GREEN}✔ 清理完成${NC}"
+            return 0
+        else
+            echo -e "${RED}❌ 操作取消，请手动处理冲突。${NC}"
+            return 1
+        fi
+    fi
+    return 0
+}
 
 function ensure_firewall_installed() {
     if command -v ufw >/dev/null || command -v firewall-cmd >/dev/null; then return 0; fi
