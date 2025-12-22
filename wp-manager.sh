@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9 (Shortcut: web)"
+VERSION="V9 (Shortcut: wp)"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
