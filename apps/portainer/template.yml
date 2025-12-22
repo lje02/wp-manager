@@ -1,0 +1,22 @@
+services:
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: {{APP_NAME}}_app
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - data:/data
+    environment:
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=9000
+    networks:
+      - proxy-net
+
+volumes:
+  data:
+
+networks:
+  proxy-net:
+    external: true
