@@ -2,7 +2,7 @@ services:
   openlist:
     image: openlistteam/openlist:latest
     container_name: {{APP_NAME}}_app
-    user:0:0
+    user:'0:0'
     restart: unless-stopped
     volumes:
       - .data:/opt/openlist/data
