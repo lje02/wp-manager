@@ -710,7 +710,7 @@ function install_remote_app() {
 
     echo -e "${YELLOW}------------------------------------------------${NC}"
     echo -e "提示: 如果该应用需要初始密码 (如 Alist, Portainer)，"
-    echo -e "请使用菜单20查看密码日志:"
+    echo -e "请使用菜单34查看密码日志:"
     echo -e "${CYAN}docker logs $pname_app${NC}"
     echo -e "${YELLOW}------------------------------------------------${NC}"
     
