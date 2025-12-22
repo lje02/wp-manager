@@ -1,0 +1,23 @@
+services:
+  openlist:
+    image: openlistteam/openlist:latest
+    container_name: {{APP_NAME}}_app
+    user:0:0
+    restart: unless-stopped
+    volumes:
+      - .data:/opt/openlist/data
+    environment:
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=5244
+    networks:
+      - proxy-net
+
+volumes:
+  data:
+
+networks:
+  proxy-net:
+    external: true
+
