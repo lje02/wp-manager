@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9 (Shortcut: wp)"
+VERSION="V9 (Shortcut: web)"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
@@ -410,6 +410,61 @@ function sys_monitor() {
         read -t 5 -p "> " o; [ "$o" == "0" ] && return
     done
 }
+# ================= 📜 容器日志查看器 =================
+function view_container_logs() {
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🔍 容器日志查看器 ===${NC}"
+        echo -e "用于找回初始密码、Token 或排查启动错误。"
+        echo "--------------------------"
+        
+        # 列出站点
+        ls -1 "$SITES_DIR"
+        echo "--------------------------"
+        echo "输入 0 返回上一级"
+        echo "--------------------------"
+        read -p "请输入要查看的域名: " domain
+        
+        if [ "$domain" == "0" ]; then return; fi
+        
+        sdir="$SITES_DIR/$domain"
+        if [ ! -d "$sdir" ]; then 
+            echo -e "${RED}目录不存在${NC}"; sleep 1; continue
+        fi
+        
+        cd "$sdir"
+        
+        echo "--------------------------"
+        echo " 1. 查看最后 50 行 (标准模式)"
+        echo " 2. 实时追踪日志 (Ctrl+C 退出)"
+        echo -e " 3. ${GREEN}🔍 搜索敏感信息 (密码/Token)${NC}"
+        echo "--------------------------"
+        read -p "请选择日志模式 [1-3]: " log_opt
+        
+        case $log_opt in
+            1) 
+                echo -e "${YELLOW}>>> 正在获取日志...${NC}"
+                docker compose logs --tail=50
+                pause_prompt
+                ;;
+            2)
+                echo -e "${YELLOW}>>> 进入实时模式 (按 Ctrl+C 退出)...${NC}"
+                sleep 1
+                docker compose logs -f --tail=20
+                ;;
+            3)
+                echo -e "${YELLOW}>>> 正在搜索 Password, Token, Key, Admin...${NC}"
+                echo "------------------------------------------------"
+                # 使用 grep 搜索常见关键词，-i 忽略大小写，-E 支持多个词
+                docker compose logs | grep -iE "pass|token|key|secret|admin|user|generated"
+                echo "------------------------------------------------"
+                echo -e "如果上面是空的，说明日志里没打印密码，或者已被滚动清理。"
+                pause_prompt
+                ;;
+            *) echo "无效选项"; sleep 1;;
+        esac
+    done
+}
 
 function log_manager() { 
     while true; do 
@@ -722,6 +777,56 @@ function app_store() {
         fi
     done
 }
+# ================= 🔄 通用更新模块 =================
+function app_update_manager() {
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🆙 应用/站点更新中心 ===${NC}"
+        echo -e "原理: 拉取 Docker 最新镜像并重建容器 (Image Pull & Recreate)"
+        echo -e "适用: 所有通过本脚本安装的应用 (Portainer, Alist, WP等)"
+        echo "--------------------------"
+        
+        # 列出所有站点
+        ls -1 "$SITES_DIR"
+        
+        echo "--------------------------"
+        echo "输入 0 返回上一级"
+        echo "--------------------------"
+        read -p "请输入要更新的域名: " domain
+        
+        if [ "$domain" == "0" ]; then return; fi
+        
+        sdir="$SITES_DIR/$domain"
+        if [ ! -d "$sdir" ]; then 
+            echo -e "${RED}❌ 目录不存在: $sdir${NC}"
+            sleep 1
+            continue
+        fi
+        
+        echo -e "${YELLOW}>>> 正在更新 $domain ...${NC}"
+        cd "$sdir"
+        
+        # 1. 拉取最新镜像
+        echo -e "${CYAN}[1/3] 正在拉取最新镜像 (docker compose pull)...${NC}"
+        if ! docker compose pull; then
+            echo -e "${RED}❌ 拉取失败，请检查网络或镜像名。${NC}"
+            pause_prompt
+            continue
+        fi
+        
+        # 2. 重建容器
+        echo -e "${CYAN}[2/3] 正在重建容器 (docker compose up -d)...${NC}"
+        docker compose up -d
+        
+        # 3. 清理旧镜像 (可选，释放磁盘空间)
+        echo -e "${CYAN}[3/3] 清理无用的旧镜像...${NC}"
+        docker image prune -f
+        
+        write_log "Updated app/site: $domain"
+        echo -e "${GREEN}✔ 更新成功！${NC}"
+        pause_prompt
+    done
+}
 
 # --- 基础操作函数 ---
 function init_gateway() { local m=$1; if ! docker network ls|grep -q proxy-net; then docker network create proxy-net >/dev/null; fi; mkdir -p "$GATEWAY_DIR"; cd "$GATEWAY_DIR"; echo "client_max_body_size 1024m;" > upload_size.conf; echo "proxy_read_timeout 600s;" >> upload_size.conf; echo "proxy_send_timeout 600s;" >> upload_size.conf; cat > docker-compose.yml <<EOF
@@ -833,6 +938,7 @@ function show_menu() {
     echo " 7. 更换网站域名"
     echo " 8. 修复反代配置"
     echo -e " 9. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
+    echo -e " 19. ${GREEN}更新应用/站点 (Pull Latest)${NC}"
     echo " 10. 解除上传限制 (一键扩容)"
     echo -e " 11. ${GREEN}WP-CLI 瑞士军刀 (重置密码/插件)${NC}"
     echo ""
@@ -845,6 +951,7 @@ function show_menu() {
     echo " 15. Telegram 通知 (报警/查看)"
     echo " 16. 系统资源监控"
     echo " 17. 日志管理系统"
+    echo -e " 20. ${GREEN}容器运行日志 (找回密码)${NC}"
     echo "-----------------------------------------"
     echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载${NC} | 0. 退出"
     echo -n "请选择: "
@@ -869,7 +976,8 @@ while true; do
         6) delete_site;; 
         7) change_domain;; 
         8) repair_proxy;; 
-        9) component_manager;; 
+        9) component_manager;;
+        19) app_update_manager;;
         10) fix_upload_limit;; 
         11) wp_toolbox;; 
         12) db_manager;; 
@@ -877,7 +985,8 @@ while true; do
         14) security_center;; 
         15) telegram_manager;; 
         16) sys_monitor;; 
-        17) log_manager;; 
+        17) log_manager;;
+        20) view_container_logs;;  
         x|X) uninstall_cluster;; 
         0) exit 0;; 
     esac
