@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9 (Shortcut: web)"
+VERSION="V9 (Shortcut: wp)"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
@@ -45,12 +45,12 @@ function pause_prompt() {
     read -r
 }
 
-# [修改点] 快捷方式改为 web
+# [修改点] 快捷方式改为 wp
 function install_shortcut() {
     local script_path=$(readlink -f "$0")
-    if [ ! -L "/usr/bin/web" ] || [ "$(readlink -f "/usr/bin/web")" != "$script_path" ]; then
-        ln -sf "$script_path" /usr/bin/web && chmod +x "$script_path"
-        echo -e "${GREEN}>>> 快捷指令 'web' 已安装 (输入 web 即可启动)${NC}"
+    if [ ! -L "/usr/bin/wp" ] || [ "$(readlink -f "/usr/bin/wp")" != "$script_path" ]; then
+        ln -sf "$script_path" /usr/bin/wp && chmod +x "$script_path"
+        echo -e "${GREEN}>>> 快捷指令 'wp' 已安装 (输入 wp 即可启动)${NC}"
     fi
 }
 
@@ -812,7 +812,7 @@ EOF
 cd "$s" && docker compose restart nginx; echo "OK";; esac; pause_prompt; done; }
 function backup_restore_ops() { while true; do clear; echo "1.Backup备份 2.Restore还原 0.Back返回"; read -p "Sel: " b; case $b in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; [ ! -d "$s" ] && continue; bd="$s/backups/$(date +%Y%m%d%H%M)"; mkdir -p "$bd"; cd "$s"; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql"; wp_c=$(docker compose ps -q wordpress); docker run --rm --volumes-from $wp_c -v "$bd":/backup alpine tar czf /backup/files.tar.gz /var/www/html/wp-content; cp *.conf docker-compose.yml "$bd/"; echo "Backup: $bd"; write_log "Backup $d"; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; bd="$s/backups"; [ ! -d "$bd" ] && continue; lt=$(ls -t "$bd"|head -1); if [ ! -z "$lt" ]; then echo "最新: $lt"; read -p "使用最新? (y/n): " u; [ "$u" == "y" ] && n="$lt"; fi; if [ -z "$n" ]; then ls -1 "$bd"; read -p "Name: " n; fi; bp="$bd/$n"; [ ! -d "$bp" ] && continue; cd "$s" && docker compose down; vol=$(docker volume ls -q|grep "${d//./_}_wp_data"); docker run --rm -v $vol:/var/www/html -v "$bp":/backup alpine tar xzf /backup/files.tar.gz -C /; docker compose up -d db; sleep 15; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysql -u root -p"$pwd" < "$bp/db.sql"; docker compose up -d; echo "Restored"; write_log "Restored $d"; pause_prompt;; esac; done; }
 # [修改点] 卸载时清理 /usr/bin/web
-function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/web; echo "已卸载"); }
+function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/wp; echo "已卸载"); }
 
 # ================= 4. 菜单显示函数 =================
 function show_menu() {
@@ -824,7 +824,7 @@ function show_menu() {
     echo " 1. 部署 WordPress 新站"
     echo " 2. 反向代理 (支持多源聚合)"
     echo " 3. 域名重定向 (301)"
-    echo -e " 18. ${GREEN}应用商店 (App Store)${NC}"
+    echo -e " 18. ${GREEN}应用商店 (一键部署)${NC}"
     echo ""
     echo -e "${YELLOW}[站点运维]${NC}"
     echo " 4. 查看站点列表"
