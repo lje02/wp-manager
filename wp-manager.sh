@@ -710,7 +710,7 @@ function install_remote_app() {
 
     echo -e "${YELLOW}------------------------------------------------${NC}"
     echo -e "提示: 如果该应用需要初始密码 (如 Alist, Portainer)，"
-    echo -e "请运行以下命令查看日志:"
+    echo -e "请使用菜单20查看密码日志:"
     echo -e "${CYAN}docker logs $pname_app${NC}"
     echo -e "${YELLOW}------------------------------------------------${NC}"
     
@@ -922,38 +922,42 @@ function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read 
 # ================= 4. 菜单显示函数 =================
 function show_menu() {
     clear
-    echo -e "${GREEN}===Docker web管理 ($VERSION) ===${NC}"
-    echo -e "${CYAN}===请勿在生产环境中使用 快捷键wp===${NC}"
+    echo -e "${GREEN}=== Docker Web Manager ($VERSION) ===${NC}"
     echo "-----------------------------------------"
-    echo -e "${YELLOW}[新建站点]${NC}"
+    
+    echo -e "${YELLOW}[🚀 部署中心]${NC}"
     echo " 1. 部署 WordPress 新站"
-    echo " 2. 反向代理 (支持多源聚合)"
-    echo " 3. 域名重定向 (301)"
-    echo -e " 18. ${GREEN}应用商店 (一键部署)${NC}"
+    echo " 2. 部署 反向代理 (聚合/单页)"
+    echo " 3. 部署 域名重定向 (301)"
+    echo -e " 4. ${GREEN}应用商店 (App Store)${NC}"
+    
     echo ""
-    echo -e "${YELLOW}[站点运维]${NC}"
-    echo " 4. 查看站点列表"
-    echo " 5. 容器状态监控"
-    echo " 6. 删除指定站点"
-    echo " 7. 更换网站域名"
-    echo " 8. 修复反代配置"
-    echo -e " 9. ${CYAN}组件版本升降级 (PHP/DB/Redis)${NC}"
-    echo -e " 19. ${GREEN}更新应用/站点 (Pull Latest)${NC}"
-    echo " 10. 解除上传限制 (一键扩容)"
-    echo -e " 11. ${GREEN}WP-CLI 瑞士军刀 (重置密码/插件)${NC}"
+    echo -e "${YELLOW}[🔧 运维管理]${NC}"
+    echo " 10. 查看站点列表"
+    echo " 11. 容器状态监控"
+    echo " 12. 删除指定站点"
+    echo " 13. 更换网站域名"
+    echo " 14. 修复反代配置"
+    echo " 15. 组件版本升降级 (PHP/DB)"
+    echo -e " 16. ${GREEN}更新应用/站点 (Pull Latest)${NC}"
+    
     echo ""
-    echo -e "${YELLOW}[数据管理]${NC}"
-    echo " 12. 数据库 导出/导入"
-    echo " 13. 整站 备份与还原 (智能扫描)"
+    echo -e "${YELLOW}[💾 数据与工具]${NC}"
+    echo " 20. 解除上传限制"
+    echo " 21. WP-CLI 瑞士军刀"
+    echo " 22. 数据库 导出/导入"
+    echo " 23. 整站 备份与还原"
+
     echo ""
-    echo -e "${RED}[安全与监控]${NC}"
-    echo -e " 14. 安全防御中心 ${GREEN}(含主机审计/挖矿检测)${NC}" # Updated text
-    echo " 15. Telegram 通知 (报警/查看)"
-    echo " 16. 系统资源监控"
-    echo " 17. 日志管理系统"
-    echo -e " 20. ${GREEN}容器运行日志 (找回密码)${NC}"
+    echo -e "${RED}[🛡️ 安全与审计]${NC}"
+    echo " 30. 安全防御中心 (审计/WAF)"
+    echo " 31. Telegram 通知"
+    echo " 32. 系统资源监控"
+    echo " 33. 脚本操作日志"
+    echo -e " 34. ${GREEN}容器运行日志 (找回密码)${NC}"
+    
     echo "-----------------------------------------"
-    echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载${NC} | 0. 退出"
+    echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载脚本${NC} | 0. 退出"
     echo -n "请选择: "
     read option
 }
@@ -966,29 +970,39 @@ if ! docker ps --format '{{.Names}}' | grep -q "^gateway_proxy$"; then echo "初
 while true; do 
     show_menu 
     case $option in 
-        u|U) update_script;; 
+        # === 部署中心 ===
         1) create_site;; 
         2) create_proxy;; 
-        3) create_redirect;;
-        18) app_store;;
-        4) list_sites;; 
-        5) container_ops;; 
-        6) delete_site;; 
-        7) change_domain;; 
-        8) repair_proxy;; 
-        9) component_manager;;
-        19) app_update_manager;;
-        10) fix_upload_limit;; 
-        11) wp_toolbox;; 
-        12) db_manager;; 
-        13) backup_restore_ops;; 
-        14) security_center;; 
-        15) telegram_manager;; 
-        16) sys_monitor;; 
-        17) log_manager;;
-        20) view_container_logs;;  
+        3) create_redirect;; 
+        4) app_store;;
+        
+        # === 运维管理 ===
+        10) list_sites;;
+        11) container_ops;; 
+        12) delete_site;; 
+        13) change_domain;; 
+        14) repair_proxy;; 
+        15) component_manager;; 
+        16) app_update_manager;; 
+
+        # === 数据与工具 ===
+        20) fix_upload_limit;; 
+        21) wp_toolbox;; 
+        22) db_manager;; 
+        23) backup_restore_ops;; 
+
+        # === 安全与审计 ===
+        30) security_center;; 
+        31) telegram_manager;; 
+        32) sys_monitor;; 
+        33) log_manager;; 
+        34) view_container_logs;;
+
+        # === 系统 ===
+        u|U) update_script;; 
         x|X) uninstall_cluster;; 
         0) exit 0;; 
+        *) echo "无效选项，请重新输入"; sleep 1;;
     esac
 done
 
