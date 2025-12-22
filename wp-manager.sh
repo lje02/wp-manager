@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9 (Shortcut: wp)"
+VERSION="V9 (快捷方式: wp)"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
@@ -710,7 +710,7 @@ function install_remote_app() {
 
     echo -e "${YELLOW}------------------------------------------------${NC}"
     echo -e "提示: 如果该应用需要初始密码 (如 Alist, Portainer)，"
-    echo -e "请使用菜单34查看密码日志:"
+    echo -e "请使用菜单20查看密码日志:"
     echo -e "${CYAN}docker logs $pname_app${NC}"
     echo -e "${YELLOW}------------------------------------------------${NC}"
     
@@ -915,8 +915,60 @@ cd "$s" && docker compose restart nginx; echo "OK";; 2) ls -1 "$SITES_DIR"; read
 server { listen 80; server_name localhost; root /var/www/html; index index.php; include /etc/nginx/waf.conf; client_max_body_size 512M; location / { try_files \$uri \$uri/ /index.php?\$args; } location ~ \.php$ { try_files \$uri =404; fastcgi_split_path_info ^(.+\.php)(/.+)$; fastcgi_pass wordpress:9000; fastcgi_index index.php; include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; fastcgi_param PATH_INFO \$fastcgi_path_info; fastcgi_read_timeout 600; } }
 EOF
 cd "$s" && docker compose restart nginx; echo "OK";; esac; pause_prompt; done; }
-function backup_restore_ops() { while true; do clear; echo "1.Backup备份 2.Restore还原 0.Back返回"; read -p "Sel: " b; case $b in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; [ ! -d "$s" ] && continue; bd="$s/backups/$(date +%Y%m%d%H%M)"; mkdir -p "$bd"; cd "$s"; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql"; wp_c=$(docker compose ps -q wordpress); docker run --rm --volumes-from $wp_c -v "$bd":/backup alpine tar czf /backup/files.tar.gz /var/www/html/wp-content; cp *.conf docker-compose.yml "$bd/"; echo "Backup: $bd"; write_log "Backup $d"; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; bd="$s/backups"; [ ! -d "$bd" ] && continue; lt=$(ls -t "$bd"|head -1); if [ ! -z "$lt" ]; then echo "最新: $lt"; read -p "使用最新? (y/n): " u; [ "$u" == "y" ] && n="$lt"; fi; if [ -z "$n" ]; then ls -1 "$bd"; read -p "Name: " n; fi; bp="$bd/$n"; [ ! -d "$bp" ] && continue; cd "$s" && docker compose down; vol=$(docker volume ls -q|grep "${d//./_}_wp_data"); docker run --rm -v $vol:/var/www/html -v "$bp":/backup alpine tar xzf /backup/files.tar.gz -C /; docker compose up -d db; sleep 15; pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}'); docker compose exec -T db mysql -u root -p"$pwd" < "$bp/db.sql"; docker compose up -d; echo "Restored"; write_log "Restored $d"; pause_prompt;; esac; done; }
-# [修改点] 卸载时清理 /usr/bin/web
+
+function backup_restore_ops() { 
+    while true; do 
+        clear; echo "1.Backup备份 2.Restore还原 0.Back返回"; read -p "Sel: " b
+        case $b in 
+            0) return;; 
+            1) 
+                ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; [ ! -d "$s" ] && continue
+                bd="$s/backups/$(date +%Y%m%d%H%M)"; mkdir -p "$bd"; cd "$s"
+                echo "正在备份数据库..."
+                pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}')
+                docker compose exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql"
+                echo "正在备份文件..."
+                wp_c=$(docker compose ps -q wordpress)
+                docker run --rm --volumes-from $wp_c -v "$bd":/backup alpine tar czf /backup/files.tar.gz /var/www/html/wp-content
+                cp *.conf docker-compose.yml "$bd/" 2>/dev/null
+                echo "Backup saved to: $bd"; write_log "Backup $d"; pause_prompt;; 
+            2) 
+                ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; bd="$s/backups"; [ ! -d "$bd" ] && continue
+                lt=$(ls -t "$bd"|head -1); if [ ! -z "$lt" ]; then echo "最新: $lt"; read -p "使用最新? (y/n): " u; [ "$u" == "y" ] && n="$lt"; fi
+                if [ -z "$n" ]; then ls -1 "$bd"; read -p "Name: " n; fi
+                bp="$bd/$n"; [ ! -d "$bp" ] && continue
+                
+                echo -e "${YELLOW}>>> 警告: 将覆盖站点 $d 的所有数据!${NC}"
+                read -p "确认还原? (yes/no): " confirm; [ "$confirm" != "yes" ] && continue
+
+                cd "$s" && docker compose down
+                echo "还原文件..."
+                vol=$(docker volume ls -q|grep "${d//./_}_wp_data")
+                # 临时容器挂载卷进行还原
+                docker run --rm -v $vol:/var/www/html -v "$bp":/backup alpine sh -c "rm -rf /var/www/html/* && tar xzf /backup/files.tar.gz -C /"
+                
+                echo "启动数据库..."
+                docker compose up -d db
+                
+                echo "等待数据库启动..."
+                for i in {1..60}; do
+                    if docker compose exec -T db mysqladmin ping -h localhost --silent >/dev/null 2>&1; then
+                        break
+                    fi
+                    sleep 1
+                done
+
+                echo "导入数据库..."
+                pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}')
+                docker compose exec -T db mysql -u root -p"$pwd" < "$bp/db.sql"
+                
+                docker compose up -d
+                echo "Restored Successfully"; write_log "Restored $d"; pause_prompt;; 
+        esac
+    done 
+}
+
+# [修改点] 卸载时清理 /usr/bin/wp
 function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/wp; echo "已卸载"); }
 
 # ================= 4. 菜单显示函数 =================
