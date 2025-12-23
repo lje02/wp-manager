@@ -2,7 +2,8 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9 (快捷方式: wp)"
+VERSION="V9.1 (快捷方式: wp)"
+DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
 BASE_DIR="/home/docker/web"
@@ -18,7 +19,8 @@ MONITOR_PID="$BASE_DIR/monitor.pid"
 MONITOR_SCRIPT="$BASE_DIR/monitor_daemon.sh"
 LISTENER_PID="$BASE_DIR/tg_listener.pid"
 LISTENER_SCRIPT="$BASE_DIR/tg_listener.sh"
-
+# 如果是海外机器，保持为空即可
+GH_PROXY="https://ghproxy.net/"
 # 自动更新源
 UPDATE_URL="https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh"
 
@@ -710,10 +712,31 @@ function install_remote_app() {
     check_ssl_status "$domain"
 
     echo -e "${YELLOW}------------------------------------------------${NC}"
-    echo -e "提示: 如果该应用需要初始密码 (如 Alist, Portainer)，"
-    echo -e "请使用菜单20查看密码日志:"
-    echo -e "${CYAN}docker logs $pname_app${NC}"
+    echo -e "正在尝试从日志中自动抓取初始密码/Token..."
     echo -e "${YELLOW}------------------------------------------------${NC}"
+    
+    # [改进] 等待5秒让容器初始化，然后尝试抓取日志
+    sleep 5
+    # 获取当前目录下 docker-compose.yml 里的第一个服务名对应的容器ID
+    # 这样不管容器叫什么名字都能找到
+    cid=$(docker compose ps -q | head -n 1)
+    
+    if [ ! -z "$cid" ]; then
+        # 搜索常见密码关键词
+        logs=$(docker logs $cid 2>&1 | grep -iE "pass|token|key|secret|admin|user|generated" | tail -n 5)
+        if [ ! -z "$logs" ]; then
+             echo -e "${GREEN}🔍 发现可能的凭证信息：${NC}"
+             echo "$logs"
+        else
+             echo -e "${CYAN}ℹ️  未在日志最后5行发现明显密码。${NC}"
+             echo -e "可能是默认密码 (admin/admin)，或需要手动执行命令。"
+             echo -e "你可以使用菜单 [34] -> [3] 深度搜索日志。"
+        fi
+        echo -e "${YELLOW}------------------------------------------------${NC}"
+        echo -e "容器ID: ${CYAN}${cid:0:12}${NC}"
+    else
+        echo -e "${RED}⚠️ 无法获取容器ID，请手动检查。${NC}"
+    fi
     
     pause_prompt
 }
@@ -722,7 +745,7 @@ function traffic_stats() {
     local log_file="$LOG_DIR/access.log"
     if [ ! -f "$log_file" ]; then
         echo -e "${RED}❌ 未找到日志文件: $log_file${NC}"
-        echo -e "${YELLOW}提示: 如果你是刚更新脚本，请先执行 '14. 重建网关' (你需要手动添加这个选项或重启网关) 以挂载日志目录。${NC}"
+        echo -e "${YELLOW}提示: 如果你是刚更新脚本，请先执行 '99. 重建网关' (你需要手动添加这个选项或重启网关) 以挂载日志目录。${NC}"
         pause_prompt
         return
     fi
@@ -979,13 +1002,26 @@ EOF
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
   db: {image: $di, container_name: ${pname}_db, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, environment: {MYSQL_ROOT_PASSWORD: $db_pass, MYSQL_DATABASE: wordpress, MYSQL_USER: wp_user, MYSQL_PASSWORD: $db_pass}, volumes: [db_data:/var/lib/mysql], networks: [default]}
-  redis: {image: redis:$rt, container_name: ${pname}_redis, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, networks: [default]}
+  
+  redis: 
+    image: redis:$rt
+    container_name: ${pname}_redis
+    restart: always
+    command: redis-server --appendonly yes  # <--- [新增] 开启 AOF 持久化
+    logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
+    volumes: 
+      - redis_data:/data  # <--- [新增] 挂载数据卷
+    networks: [default]
+
   wordpress: {image: wordpress:$pt, container_name: ${pname}_app, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, depends_on: [db, redis], environment: {WORDPRESS_DB_HOST: db, WORDPRESS_DB_USER: wp_user, WORDPRESS_DB_PASSWORD: $db_pass, WORDPRESS_DB_NAME: wordpress, WORDPRESS_CONFIG_EXTRA: "define('WP_REDIS_HOST','redis');define('WP_REDIS_PORT',6379);define('WP_HOME','https://'.\$\$_SERVER['HTTP_HOST']);define('WP_SITEURL','https://'.\$\$_SERVER['HTTP_HOST']);if(isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'])&&strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'],'https')!==false){\$\$_SERVER['HTTPS']='on';}"}, volumes: [wp_data:/var/www/html, ./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini], networks: [default]}
+  
   nginx: {image: nginx:alpine, container_name: ${pname}_nginx, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [wp_data:/var/www/html, ./nginx.conf:/etc/nginx/conf.d/default.conf, ./waf.conf:/etc/nginx/waf.conf], environment: {VIRTUAL_HOST: "$fd", LETSENCRYPT_HOST: "$fd", LETSENCRYPT_EMAIL: "$email"}, networks: [default, proxy-net]}
-volumes: {db_data: , wp_data: }
+
+volumes: {db_data: , wp_data: , redis_data: } # <--- [新增] redis_data 定义
 networks: {proxy-net: {external: true}}
 EOF
-    cd "$sdir" && docker compose up -d; check_ssl_status "$fd"; write_log "Created site $fd"
+$DOCKER_COMPOSE_CMD
+    cd "$sdir" && $DOCKER_COMPOSE_CMD up -d; check_ssl_status "$fd"; write_log "Created site $fd"
 }
 function create_proxy() {
     read -p "1. 已解析到本机域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
@@ -1105,18 +1141,60 @@ function rebuild_gateway_action() {
     fi
 }
 
-# [修改点] 卸载时清理 /usr/bin/wp
-function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/wp; echo "已卸载"); }
+function uninstall_cluster() {
+    clear
+    echo -e "${RED}⚠️  高危操作：卸载脚本及所有数据${NC}"
+    echo -e "此操作将执行以下清理："
+    echo -e " 1. 停止并删除所有 Docker 容器 (站点 + 网关)"
+    echo -e " 2. 删除所有数据文件 ($BASE_DIR)"
+    echo -e " 3. 删除快捷指令 (/usr/bin/wp)"
+    echo "------------------------------------------------"
+    echo -e "${YELLOW}请输入 DELETE 确认卸载，输入其他内容取消。${NC}"
+    read -p "> " c
+    
+    if [ "$c" == "DELETE" ]; then
+        echo -e "${YELLOW}>>> 正在停止容器并清理数据...${NC}"
+        
+        # 1. 尝试停止所有站点
+        if [ -d "$SITES_DIR" ]; then
+            ls "$SITES_DIR" | while read d; do 
+                s_path="$SITES_DIR/$d"
+                if [ -d "$s_path" ]; then
+                    cd "$s_path" && docker compose down -v >/dev/null 2>&1
+                fi
+            done
+        fi
+
+        # 2. 停止网关
+        if [ -d "$GATEWAY_DIR" ]; then
+            cd "$GATEWAY_DIR" && docker compose down -v >/dev/null 2>&1
+        fi
+
+        # 3. 清理网络和文件
+        docker network rm proxy-net >/dev/null 2>&1
+        rm -rf "$BASE_DIR"
+        rm -f /usr/bin/wp
+        
+        echo -e "${GREEN}✔ 已彻底卸载。江湖路远，有缘再见！${NC}"
+        
+        # 核心修复：直接结束脚本进程
+        exit 0
+    else
+        echo "❌ 操作已取消"
+        sleep 1
+    fi
+}
 
 # ================= 4. 菜单显示函数 =================
 function show_menu() {
     clear
-    echo -e "${GREEN}=== Docker Web Manager ($VERSION) ===${NC}"
+    echo -e "${GREEN}=== Docker 应用部署 ($VERSION) ===${NC}"
+    echo -e "${CYAN}===仅供个人使用 快捷键wp===${NC}"
     echo "-----------------------------------------"
     
     echo -e "${YELLOW}[🚀 部署中心]${NC}"
     echo " 1. 部署 WordPress 新站"
-    echo " 2. 部署 反向代理 (聚合/单页)"
+    echo " 2. 部署 反向代理 (聚合/普通/端口)"
     echo " 3. 部署 域名重定向 (301)"
     echo -e " 4. ${GREEN}应用商店 (App Store)${NC}"
     
