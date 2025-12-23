@@ -15,7 +15,7 @@ Docker-Web
 
 ---
 
-安装
+
 curl -sL https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh -o wp-manager.sh
 chmod +x wp-manager.sh
 ./wp-manager.sh
