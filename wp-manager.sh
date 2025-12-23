@@ -11,6 +11,7 @@ BASE_DIR="/home/docker/web"
 SITES_DIR="$BASE_DIR/sites"
 GATEWAY_DIR="$BASE_DIR/gateway"
 FW_DIR="$BASE_DIR/firewall"
+LOG_DIR="$BASE_DIR/logs"
 TG_CONF="$BASE_DIR/telegram.conf"
 LOG_FILE="$BASE_DIR/operation.log"
 MONITOR_PID="$BASE_DIR/monitor.pid"
@@ -30,7 +31,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # 初始化目录
-mkdir -p "$SITES_DIR" "$GATEWAY_DIR" "$FW_DIR"
+mkdir -p "$SITES_DIR" "$GATEWAY_DIR" "$FW_DIR" "$LOG_DIR"
 touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf"
 [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE"
 
@@ -716,6 +717,67 @@ function install_remote_app() {
     
     pause_prompt
 }
+function traffic_stats() {
+    # 检查日志是否存在
+    local log_file="$LOG_DIR/access.log"
+    if [ ! -f "$log_file" ]; then
+        echo -e "${RED}❌ 未找到日志文件: $log_file${NC}"
+        echo -e "${YELLOW}提示: 如果你是刚更新脚本，请先执行 '14. 重建网关' (你需要手动添加这个选项或重启网关) 以挂载日志目录。${NC}"
+        pause_prompt
+        return
+    fi
+
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 📈 站点访问流量统计 ===${NC}"
+        echo -e "日志大小: $(du -h $log_file | awk '{print $1}')"
+        echo "--------------------------"
+        echo " 1. 实时可视化面板 (GoAccess CLI)"
+        echo " 2. 生成 HTML 报表 (下载到本地看)"
+        echo " 3. 快速文本统计 (Top 10 IP)"
+        echo " 4. 快速文本统计 (Top 10 URL)"
+        echo " 5. 清空旧日志"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-5]: " s
+        case $s in
+            0) return;;
+            1)
+                echo -e "${GREEN}>>> 正在启动 GoAccess 面板...${NC}"
+                echo -e "(操作提示: 按 F1 查看帮助, q 退出)"
+                sleep 2
+                # 使用 Docker 运行 GoAccess，无需在宿主机安装
+                docker run --rm -it -v "$LOG_DIR":/srv/logs xavierh/goaccess-for-nginxproxymanager goaccess /srv/logs/access.log --log-format=COMBINED --real-time-html=false
+                ;;
+            2)
+                echo -e "${GREEN}>>> 正在生成 Report...${NC}"
+                docker run --rm -v "$LOG_DIR":/srv/logs xavierh/goaccess-for-nginxproxymanager goaccess /srv/logs/access.log --log-format=COMBINED -o /srv/logs/report.html
+                echo -e "✅ 报表已生成: ${CYAN}$LOG_DIR/report.html${NC}"
+                echo -e "你可以通过 FTP/SFTP 下载该文件，或临时移动到网站目录查看。"
+                pause_prompt
+                ;;
+            3)
+                echo -e "\n${CYAN}--- Top 10 访问 IP ---${NC}"
+                awk '{print $1}' "$log_file" | sort | uniq -c | sort -rn | head -n 10
+                pause_prompt
+                ;;
+            4)
+                echo -e "\n${CYAN}--- Top 10 访问 URL ---${NC}"
+                awk -F\" '{print $2}' "$log_file" | awk '{print $2}' | sort | uniq -c | sort -rn | head -n 10
+                pause_prompt
+                ;;
+            5)
+                echo -e "${YELLOW}确定要清空访问日志吗？(y/n)${NC}"
+                read -p "> " c
+                if [ "$c" == "y" ]; then
+                    echo "" > "$log_file"
+                    echo "已清空。"
+                fi
+                pause_prompt
+                ;;
+        esac
+    done
+}
 
 function app_store() {
     # 依赖检查：我们需要 jq 来解析 JSON
@@ -829,14 +891,70 @@ function app_update_manager() {
 }
 
 # --- 基础操作函数 ---
-function init_gateway() { local m=$1; if ! docker network ls|grep -q proxy-net; then docker network create proxy-net >/dev/null; fi; mkdir -p "$GATEWAY_DIR"; cd "$GATEWAY_DIR"; echo "client_max_body_size 1024m;" > upload_size.conf; echo "proxy_read_timeout 600s;" >> upload_size.conf; echo "proxy_send_timeout 600s;" >> upload_size.conf; cat > docker-compose.yml <<EOF
+function init_gateway() { 
+    local m=$1
+    if ! docker network ls|grep -q proxy-net; then docker network create proxy-net >/dev/null; fi
+    mkdir -p "$GATEWAY_DIR" "$LOG_DIR" # 确保日志目录存在
+    cd "$GATEWAY_DIR"
+    
+    # 生成上传限制配置
+    echo "client_max_body_size 1024m;" > upload_size.conf
+    echo "proxy_read_timeout 600s;" >> upload_size.conf
+    echo "proxy_send_timeout 600s;" >> upload_size.conf
+    
+    # [修改点] 增加了 ./logs:/var/log/nginx 的映射
+    cat > docker-compose.yml <<EOF
 services:
-  nginx-proxy: {image: nginxproxy/nginx-proxy, container_name: gateway_proxy, ports: ["80:80", "443:443"], logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:ro, /var/run/docker.sock:/tmp/docker.sock:ro, ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro, ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro, ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro], networks: ["proxy-net"], restart: always, environment: ["TRUST_DOWNSTREAM_PROXY=true"]}
-  acme-companion: {image: nginxproxy/acme-companion, container_name: gateway_acme, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [conf:/etc/nginx/conf.d, vhost:/etc/nginx/vhost.d, html:/usr/share/nginx/html, certs:/etc/nginx/certs:rw, acme:/etc/acme.sh, /var/run/docker.sock:/var/run/docker.sock:ro], environment: ["DEFAULT_EMAIL=admin@localhost.com", "NGINX_PROXY_CONTAINER=gateway_proxy", "ACME_CA_URI=https://acme-v02.api.letsencrypt.org/directory"], networks: ["proxy-net"], depends_on: ["nginx-proxy"], restart: always}
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: gateway_proxy
+    ports: ["80:80", "443:443"]
+    logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
+    volumes:
+      - conf:/etc/nginx/conf.d
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - certs:/etc/nginx/certs:ro
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro
+      - ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro
+      - ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro
+      - ../logs:/var/log/nginx  # <--- 核心修改：映射日志到宿主机
+    networks: ["proxy-net"]
+    restart: always
+    environment: ["TRUST_DOWNSTREAM_PROXY=true"]
+
+  acme-companion:
+    image: nginxproxy/acme-companion
+    container_name: gateway_acme
+    logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
+    volumes:
+      - conf:/etc/nginx/conf.d
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - certs:/etc/nginx/certs:rw
+      - acme:/etc/acme.sh
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - DEFAULT_EMAIL=admin@localhost.com
+      - NGINX_PROXY_CONTAINER=gateway_proxy
+      - ACME_CA_URI=https://acme-v02.api.letsencrypt.org/directory
+    networks: ["proxy-net"]
+    depends_on: ["nginx-proxy"]
+    restart: always
+
 volumes: {conf: , vhost: , html: , certs: , acme: }
 networks: {proxy-net: {external: true}}
 EOF
-if docker compose up -d --remove-orphans >/dev/null 2>&1; then [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关启动成功${NC}"; else echo -e "${RED}✘ 网关启动失败${NC}"; [ "$m" == "force" ] && docker compose up -d; fi; }
+
+    # 启动逻辑
+    if docker compose up -d --remove-orphans >/dev/null 2>&1; then 
+        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关启动成功 (已启用日志分析)${NC}"
+    else 
+        echo -e "${RED}✘ 网关启动失败${NC}"
+        [ "$m" == "force" ] && docker compose up -d
+    fi 
+}
 
 function create_site() {
     read -p "1. 域名: " fd; host_ip=$(curl -s4 ifconfig.me); if command -v dig >/dev/null; then dip=$(dig +short $fd|head -1); else dip=$(getent hosts $fd|awk '{print $1}'); fi; if [ ! -z "$dip" ] && [ "$dip" != "$host_ip" ]; then echo -e "${RED}IP不符${NC}"; read -p "继续? (y/n): " f; [ "$f" != "y" ] && return; fi
@@ -892,22 +1010,19 @@ location /$k/ { rewrite ^/$k/(.*) /\$1 break; proxy_pass $re; proxy_set_header H
 EOF
 ((c++)); done; echo "sub_filter_once off; sub_filter_types *;" >> "$f"; fi; echo "}" >> "$f"; [ -f "$f.loc" ] && cat "$f.loc" >> "$f" && rm "$f.loc"; echo "}" >> "$f"
 }
-function repair_proxy() { ls -1 "$SITES_DIR"; read -p "域名: " d; sdir="$SITES_DIR/$d"; [ ! -d "$sdir" ] && return; read -p "新URL: " tu; tu=$(normalize_url "$tu"); generate_nginx_conf "$tu" "$d" "1"; cd "$sdir" && docker compose restart; echo "OK"; pause_prompt; }
 
-function fix_upload_limit() { ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; cat > "$s/uploads.ini" <<EOF
-file_uploads = On
-memory_limit = 512M
-upload_max_filesize = 512M
-post_max_size = 512M
-max_execution_time = 600
-EOF
-if [ -f "$s/nginx.conf" ]; then sed -i 's/client_max_body_size .*/client_max_body_size 512M;/g' "$s/nginx.conf"; fi; cd "$s" && docker compose restart; echo "OK"; pause_prompt; }
 function create_redirect() { read -p "Src Domain: " s; read -p "Target URL: " t; t=$(normalize_url "$t"); read -p "Email: " e; sdir="$SITES_DIR/$s"; mkdir -p "$sdir"; echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"; echo "services: {redirector: {image: nginx:alpine, container_name: ${s//./_}_redirect, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [./redirect.conf:/etc/nginx/conf.d/default.conf], environment: {VIRTUAL_HOST: \"$s\", LETSENCRYPT_HOST: \"$s\", LETSENCRYPT_EMAIL: \"$e\"}, networks: [proxy-net]}}" > "$sdir/docker-compose.yml"; echo "networks: {proxy-net: {external: true}}" >> "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; check_ssl_status "$s"; }
+
 function delete_site() { while true; do clear; echo "=== 🗑️ 删除网站 ==="; ls -1 "$SITES_DIR"; echo "----------------"; read -p "域名(0返回): " d; [ "$d" == "0" ] && return; if [ -d "$SITES_DIR/$d" ]; then read -p "确认? (y/n): " c; [ "$c" == "y" ] && cd "$SITES_DIR/$d" && docker compose down -v >/dev/null 2>&1 && cd .. && rm -rf "$SITES_DIR/$d" && echo "Deleted"; write_log "Deleted site $d"; fi; pause_prompt; done; }
+
 function list_sites() { clear; echo "=== 📂 站点列表 ==="; ls -1 "$SITES_DIR"; echo "----------------"; pause_prompt; }
+
 function cert_management() { while true; do clear; echo "1.列表 2.上传 3.重置 4.续签 0.返回"; read -p "选: " c; case $c in 0) return;; 1) docker exec gateway_proxy ls -lh /etc/nginx/certs|grep .crt; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "crt: " c; read -p "key: " k; docker cp "$c" gateway_acme:"/etc/nginx/certs/$d.crt"; docker cp "$k" gateway_acme:"/etc/nginx/certs/$d.key"; docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 3) read -p "域名: " d; docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key"; docker restart gateway_acme; echo "OK"; pause_prompt;; 4) docker exec gateway_acme /app/force_renew; echo "OK"; pause_prompt;; esac; done; }
+
 function db_manager() { while true; do clear; echo "1.导出 2.导入 0.返回"; read -p "选: " c; case $c in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$s/${d}.sql"; echo "OK: $s/${d}.sql";; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "SQL File: " f; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); cat "$f" | docker compose -f "$s/docker-compose.yml" exec -T db mysql -u root -p"$pwd"; echo "OK";; esac; pause_prompt; done; }
+
 function change_domain() { ls -1 "$SITES_DIR"; read -p "旧域名: " o; [ ! -d "$SITES_DIR/$o" ] && return; read -p "新域名: " n; cd "$SITES_DIR/$o" && docker compose down; cd .. && mv "$o" "$n" && cd "$n"; sed -i "s/$o/$n/g" docker-compose.yml; docker compose up -d; wp_c=$(docker compose ps -q wordpress); docker run --rm --volumes-from $wp_c --network container:$wp_c wordpress:cli wp search-replace "$o" "$n" --all-tables --skip-columns=guid; docker exec gateway_proxy nginx -s reload; echo "OK"; write_log "Changed $o to $n"; pause_prompt; }
+
 function manage_hotlink() { while true; do clear; echo "1.开 2.关 0.返"; read -p "选: " h; case $h in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; read -p "白名单: " w; cat > "$s/nginx.conf" <<EOF
 server { listen 80; server_name localhost; root /var/www/html; index index.php; include /etc/nginx/waf.conf; client_max_body_size 512M; location ~* \.(gif|jpg|png|webp)$ { valid_referers none blocked server_names $d *.$d $w; if (\$invalid_referer) { return 403; } try_files \$uri \$uri/ /index.php?\$args; } location / { try_files \$uri \$uri/ /index.php?\$args; } location ~ \.php$ { try_files \$uri =404; fastcgi_split_path_info ^(.+\.php)(/.+)$; fastcgi_pass wordpress:9000; fastcgi_index index.php; include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; fastcgi_param PATH_INFO \$fastcgi_path_info; fastcgi_read_timeout 600; } }
 EOF
@@ -967,6 +1082,28 @@ function backup_restore_ops() {
         esac
     done 
 }
+function rebuild_gateway_action() {
+    clear
+    echo -e "${RED}⚠️  危险操作：重建核心网关${NC}"
+    echo "----------------------------------------"
+    echo -e "此操作将会："
+    echo -e "1. 停止并删除当前的 Nginx 网关容器"
+    echo -e "2. 重新生成 docker-compose.yml 配置文件"
+    echo -e "3. 重新拉起网关服务"
+    echo -e "${YELLOW}适用场景：开启日志分析功能、修复网关报错、更新网关配置。${NC}"
+    echo "----------------------------------------"
+    read -p "确认执行吗? (输入 yes 确认): " confirm
+    
+    if [ "$confirm" == "yes" ]; then
+        echo -e "${GREEN}>>> 开始重建网关...${NC}"
+        # 调用 init_gateway 函数，传入 "force" 参数强制重建
+        init_gateway "force"
+        pause_prompt
+    else
+        echo "操作已取消"
+        sleep 1
+    fi
+}
 
 # [修改点] 卸载时清理 /usr/bin/wp
 function uninstall_cluster() { echo "⚠️ 危险: 输入 DELETE 确认"; read -p "> " c; [ "$c" == "DELETE" ] && (ls "$SITES_DIR"|while read d; do cd "$SITES_DIR/$d" && docker compose down -v; done; cd "$GATEWAY_DIR" && docker compose down -v; docker network rm proxy-net; rm -rf "$BASE_DIR" /usr/bin/wp; echo "已卸载"); }
@@ -989,16 +1126,15 @@ function show_menu() {
     echo " 11. 容器状态监控"
     echo " 12. 删除指定站点"
     echo " 13. 更换网站域名"
-    echo " 14. 修复反代配置"
-    echo " 15. 组件版本升降级 (PHP/DB)"
-    echo -e " 16. ${GREEN}更新应用/站点 (Pull Latest)${NC}"
+    echo " 14. 组件版本升降级 (PHP/DB)"
+    echo -e " 15. ${GREEN}更新应用/站点 (Pull Latest)${NC}"
+    echo -e " 16. ${GREEN}站点访问统计 (GoAccess)${NC}"
     
     echo ""
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
-    echo " 20. 解除上传限制"
-    echo " 21. WP-CLI 瑞士军刀"
-    echo " 22. 数据库 导出/导入"
-    echo " 23. 整站 备份与还原"
+    echo " 20. WP-CLI 瑞士军刀"
+    echo " 21. 数据库 导出/导入"
+    echo " 22. 整站 备份与还原"
 
     echo ""
     echo -e "${RED}[🛡️ 安全与审计]${NC}"
@@ -1007,6 +1143,7 @@ function show_menu() {
     echo " 32. 系统资源监控"
     echo " 33. 脚本操作日志"
     echo -e " 34. ${GREEN}容器运行日志 (找回密码)${NC}"
+    echo -e " 99. ${YELLOW}重建核心网关 (应用配置)${NC}"
     
     echo "-----------------------------------------"
     echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载脚本${NC} | 0. 退出"
@@ -1032,16 +1169,15 @@ while true; do
         10) list_sites;;
         11) container_ops;; 
         12) delete_site;; 
-        13) change_domain;; 
-        14) repair_proxy;; 
-        15) component_manager;; 
-        16) app_update_manager;; 
+        13) change_domain;;  
+        14) component_manager;; 
+        15) app_update_manager;;
+        16) traffic_stats;;
 
         # === 数据与工具 ===
-        20) fix_upload_limit;; 
-        21) wp_toolbox;; 
-        22) db_manager;; 
-        23) backup_restore_ops;; 
+        20) wp_toolbox;; 
+        21) db_manager;; 
+        22) backup_restore_ops;; 
 
         # === 安全与审计 ===
         30) security_center;; 
@@ -1049,6 +1185,7 @@ while true; do
         32) sys_monitor;; 
         33) log_manager;; 
         34) view_container_logs;;
+        99) rebuild_gateway_action;;
 
         # === 系统 ===
         u|U) update_script;; 
