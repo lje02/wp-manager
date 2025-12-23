@@ -224,6 +224,18 @@ function server_audit() {
                 netstat -tunlp | grep LISTEN | awk '{printf "%-8s %-25s %-15s %-20s\n", $1, $4, $6, $7}'
                 echo "--------------------------------------------------------"
                 echo "常见高危端口: 3306(MySQL), 6379(Redis), 22(SSH - 如有弱密码)"
+                echo -e "\n${YELLOW}>>> 正在深度检测数据库风险...${NC}"
+    
+    # 检查所有容器，看是否有绑定到 0.0.0.0 的 3306/6379/5432 端口
+    risky_ports=$(docker ps --format "{{.Names}} {{.Ports}}" | grep -E "0.0.0.0:(3306|6379|5432|27017)")
+    
+    if [ ! -z "$risky_ports" ]; then
+                echo -e "${RED}🚨 严重警告！发现数据库端口直接暴露在公网：${NC}"
+                echo "$risky_ports"
+                echo -e "${YELLOW}建议立即修改 docker-compose.yml，移除 'ports' 映射，或改为 '127.0.0.1:3306:3306'${NC}"
+    else
+                echo -e "${GREEN}✔ 数据库端口安全（未检测到公网暴露）${NC}"
+    fi
                 pause_prompt;;
             2)
                 echo -e "\n${GREEN}>>> 正在执行安全扫描...${NC}"
@@ -916,73 +928,136 @@ function app_update_manager() {
 # --- 基础操作函数 ---
 function init_gateway() { 
     local m=$1
-    if ! docker network ls|grep -q proxy-net; then docker network create proxy-net >/dev/null; fi
-    mkdir -p "$GATEWAY_DIR" "$LOG_DIR" # 确保日志目录存在
+    # 1. 确保网络存在
+    if ! docker network ls | grep -q proxy-net; then 
+        docker network create proxy-net >/dev/null
+    fi
+    
+    # 2. 确保目录存在
+    mkdir -p "$GATEWAY_DIR" "$LOG_DIR"
     cd "$GATEWAY_DIR"
     
-    # 生成上传限制配置
+    # 3. 生成 Nginx 配置文件
     echo "client_max_body_size 1024m;" > upload_size.conf
     echo "proxy_read_timeout 600s;" >> upload_size.conf
     echo "proxy_send_timeout 600s;" >> upload_size.conf
     
-    # [修改点] 增加了 ./logs:/var/log/nginx 的映射
+    # 4. 生成 Docker Compose 文件 (集成 Socket Proxy)
     cat > docker-compose.yml <<EOF
 services:
+  # [新增] Socket 安全代理：作为盾牌，拦截危险的 Docker 指令
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy
+    container_name: gateway_socket_proxy
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - CONTAINERS=1  # 允许查询容器
+      - NETWORKS=1    # 允许查询网络
+      - INFO=1        # 允许查询系统信息
+      - POST=0        # ⛔ 禁止所有修改/删除操作 (核心安全配置)
+    networks:
+      - "proxy-net"
+
   nginx-proxy:
     image: nginxproxy/nginx-proxy
     container_name: gateway_proxy
-    ports: ["80:80", "443:443"]
-    logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
-    volumes:
+    ports: 
+      - "80:80"
+      - "443:443"
+    logging: 
+      driver: "json-file"
+      options: 
+        max-size: "10m" 
+        max-file: "3"
+    volumes: 
       - conf:/etc/nginx/conf.d
       - vhost:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - certs:/etc/nginx/certs:ro
-      - /var/run/docker.sock:/tmp/docker.sock:ro
       - ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro
       - ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro
       - ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro
-      - ../logs:/var/log/nginx  # <--- 核心修改：映射日志到宿主机
-    networks: ["proxy-net"]
+      - ../logs:/var/log/nginx
+      # ⚠️ 注意：此处不再挂载 /var/run/docker.sock
+    environment: 
+      - "TRUST_DOWNSTREAM_PROXY=true"
+      - "DOCKER_HOST=tcp://gateway_socket_proxy:2375" # 指向安全代理
+    networks: 
+      - "proxy-net"
+    depends_on:
+      - socket-proxy
     restart: always
-    environment: ["TRUST_DOWNSTREAM_PROXY=true"]
 
   acme-companion:
     image: nginxproxy/acme-companion
     container_name: gateway_acme
-    logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
-    volumes:
+    logging: 
+      driver: "json-file" 
+      options: 
+        max-size: "10m" 
+        max-file: "3"
+    volumes: 
       - conf:/etc/nginx/conf.d
       - vhost:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - certs:/etc/nginx/certs:rw
       - acme:/etc/acme.sh
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - DEFAULT_EMAIL=admin@localhost.com
-      - NGINX_PROXY_CONTAINER=gateway_proxy
-      - ACME_CA_URI=https://acme-v02.api.letsencrypt.org/directory
-    networks: ["proxy-net"]
-    depends_on: ["nginx-proxy"]
+      # ⚠️ 此处也不挂载 Socket，改用代理
+    environment: 
+      - "DEFAULT_EMAIL=admin@localhost.com"
+      - "NGINX_PROXY_CONTAINER=gateway_proxy"
+      - "ACME_CA_URI=https://acme-v02.api.letsencrypt.org/directory"
+      - "DOCKER_HOST=tcp://gateway_socket_proxy:2375" # 指向安全代理
+    networks: 
+      - "proxy-net"
+    depends_on: 
+      - "nginx-proxy"
+      - "socket-proxy"
     restart: always
 
-volumes: {conf: , vhost: , html: , certs: , acme: }
-networks: {proxy-net: {external: true}}
+  # Watchtower 需要执行更新(删除旧容器/启动新容器)，所以必须挂载真实 Socket
+  watchtower:
+    image: containrrr/watchtower
+    container_name: gateway_watchtower
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * *
+      - WATCHTOWER_INCLUDE_STOPPED=true
+    networks:
+      - "proxy-net"
+
+volumes: 
+  conf: 
+  vhost: 
+  html: 
+  certs: 
+  acme: 
+
+networks: 
+  proxy-net: 
+    external: true
 EOF
 
-    # 启动逻辑
-    if docker compose up -d --remove-orphans >/dev/null 2>&1; then 
-        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关启动成功 (已启用日志分析)${NC}"
+    # 5. 启动逻辑
+    local cmd=${DOCKER_COMPOSE_CMD:-"docker compose"}
+
+    if $cmd up -d --remove-orphans >/dev/null 2>&1; then 
+        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关启动成功 (已集成 SocketProxy 安全隔离)${NC}"
     else 
         echo -e "${RED}✘ 网关启动失败${NC}"
-        [ "$m" == "force" ] && docker compose up -d
+        [ "$m" == "force" ] && $cmd up -d
     fi 
 }
 
 function create_site() {
     read -p "1. 域名: " fd; host_ip=$(curl -s4 ifconfig.me); if command -v dig >/dev/null; then dip=$(dig +short $fd|head -1); else dip=$(getent hosts $fd|awk '{print $1}'); fi; if [ ! -z "$dip" ] && [ "$dip" != "$host_ip" ]; then echo -e "${RED}IP不符${NC}"; read -p "继续? (y/n): " f; [ "$f" != "y" ] && return; fi
     read -p "2. 邮箱: " email; read -p "3. DB密码: " db_pass
-    echo -e "${YELLOW}自定义版本? (默:PHP8.2/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust; pt="php8.2-fpm-alpine"; di="mysql:8.0"; rt="7.0-alpine"
+    echo -e "${YELLOW}自定义版本? (默:PHP8.2/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust; pt="php8.2-fpm-alpine"; di="mariadb:10.6"; rt="7.0-alpine"
     if [ "$cust" == "y" ]; then echo "PHP: 1.7.4 2.8.0 3.8.1 4.8.2 5.8.3 6.最新"; read -p "选: " p; case $p in 1) pt="php7.4-fpm-alpine";; 2) pt="php8.0-fpm-alpine";; 3) pt="php8.1-fpm-alpine";; 4) pt="php8.2-fpm-alpine";; 5) pt="php8.3-fpm-alpine";; 6) pt="fpm-alpine";; esac; echo "DB: 1.M5.7 2.M8.0 3.最新 4.Ma10.6 5.最新"; read -p "选: " d; case $d in 1) di="mysql:5.7";; 2) di="mysql:8.0";; 3) di="mysql:latest";; 4) di="mariadb:10.6";; 5) di="mariadb:latest";; esac; echo "Redis: 1.6.2 2.7.0 3.最新"; read -p "选: " r; case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; esac; fi
     pname=$(echo $fd|tr '.' '_'); sdir="$SITES_DIR/$fd"; [ -d "$sdir" ] && echo -e "已存在" && pause_prompt && return; mkdir -p "$sdir"
     cat > "$sdir/waf.conf" <<EOF
