@@ -13,7 +13,10 @@ Docker-Web
 • Telegram Bot：资源报警、指令交互
 • 运维工具：容器监控、日志查看、WP-CLI工具箱、备份还原
 
----
+更新 apt 包索引并安装必要的依赖：
+sudo apt-get update
+sudo apt-get install ca-certificates curl gnupg
+
 
 
 curl -sL https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh -o wp-manager.sh
