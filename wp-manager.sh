@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.1 (快捷方式: wp)"
+VERSION="V9.2 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -637,22 +637,127 @@ function port_manager() {
 }
 
 function traffic_manager() { 
+    # 依赖检查
+    if [ ! -f "$FW_DIR/access.conf" ]; then touch "$FW_DIR/access.conf"; fi
+    if [ ! -f "$FW_DIR/geo.conf" ]; then touch "$FW_DIR/geo.conf"; fi
+    if [ ! -f "$FW_DIR/bots.conf" ]; then touch "$FW_DIR/bots.conf"; fi
+
+    # 内部函数：安全重载 Nginx
+    function safe_reload() {
+        echo -e "${YELLOW}>>> 正在测试 Nginx 配置...${NC}"
+        if docker exec gateway_proxy nginx -t >/dev/null 2>&1; then
+            docker exec gateway_proxy nginx -s reload
+            echo -e "${GREEN}✔ 配置生效${NC}"
+        else
+            echo -e "${RED}❌ 配置有误，Nginx 拒绝加载！${NC}"
+            echo -e "请检查刚才输入的 IP 或规则是否正确。"
+        fi
+    }
+
+    # 内部函数：校验 IP 格式
+    function validate_ip() {
+        local ip=$1
+        if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
+            return 0
+        else
+            return 1
+        fi
+    }
+
     while true; do 
-        clear; echo -e "${YELLOW}=== 🌐 流量控制 (ACL) ===${NC}"
-        echo " 1. 添加 黑名单 IP"
-        echo " 2. 添加 白名单 IP"
-        echo " 3. 封禁 指定国家"
-        echo " 4. 清空 所有规则"
+        clear; echo -e "${YELLOW}=== 🌐 流量控制加强版 (Traffic ACL) ===${NC}"
+        echo -e "当前规则数: IP[$(wc -l < "$FW_DIR/access.conf")] | 国家[$(wc -l < "$FW_DIR/geo.conf")]"
+        echo "--------------------------"
+        echo " 1. 添加 黑/白 名单 IP"
+        echo " 2. 查看 已封禁/放行 列表"
+        echo " 3. 删除 指定 IP 规则"
+        echo "--------------------------"
+        echo " 4. 封禁 指定国家 (GeoIP)"
+        echo " 5. 屏蔽 恶意爬虫/扫描器 (User-Agent)"
+        echo "--------------------------"
+        echo " 6. 清空 所有规则"
         echo " 0. 返回上一级"
         echo "--------------------------"
-        read -p "请输入选项 [0-4]: " t
+        read -p "请输入选项 [0-6]: " t
+        
         case $t in 
             0) return;; 
-            1|2) tp="deny"; [ "$t" == "2" ] && tp="allow"; read -p "IP: " i; echo "$tp $i;" >> "$FW_DIR/access.conf"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
-            3) read -p "国家代码(cn): " c; wget -qO- "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" | while read l; do echo "deny $l;" >> "$FW_DIR/geo.conf"; done; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
-            4) echo "">"$FW_DIR/access.conf"; echo "">"$FW_DIR/geo.conf"; cd "$GATEWAY_DIR" && docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 
+            
+            1) 
+                echo -e "1. 黑名单 (Deny) - 禁止访问"
+                echo -e "2. 白名单 (Allow) - 允许访问 (需配合 deny all 使用，慎用)"
+                read -p "请选择类型 [1/2]: " type
+                if [ "$type" == "1" ]; then rule="deny"; else rule="allow"; fi
+                
+                read -p "请输入 IP 或网段 (如 1.2.3.4 或 1.2.3.0/24): " ip
+                if validate_ip "$ip"; then
+                    # 查重
+                    if grep -q "$ip;" "$FW_DIR/access.conf"; then
+                        echo -e "${YELLOW}该 IP 已存在于列表中${NC}"
+                    else
+                        echo "$rule $ip;" >> "$FW_DIR/access.conf"
+                        safe_reload
+                    fi
+                else
+                    echo -e "${RED}❌ IP 格式错误！${NC}"
+                fi
+                pause_prompt;; 
+            
+            2) 
+                echo -e "${CYAN}=== 当前 IP 规则列表 ===${NC}"
+                if [ -s "$FW_DIR/access.conf" ]; then
+                    cat -n "$FW_DIR/access.conf"
+                else
+                    echo "列表为空"
+                fi
+                echo "--------------------------"
+                pause_prompt;;
+
+            3) 
+                echo -e "${CYAN}=== 删除规则 ===${NC}"
+                if [ ! -s "$FW_DIR/access.conf" ]; then echo "列表为空"; pause_prompt; continue; fi
+                cat -n "$FW_DIR/access.conf"
+                echo "--------------------------"
+                read -p "请输入要删除的 IP (输入内容): " del_ip
+                if [ ! -z "$del_ip" ]; then
+                    # 创建临时文件以防 sed 出错
+                    sed -i "/$del_ip;/d" "$FW_DIR/access.conf"
+                    echo -e "${GREEN}已删除包含 $del_ip 的规则${NC}"
+                    safe_reload
+                fi
+                pause_prompt;;
+
+            4) 
+                read -p "请输入国家代码 (如 cn, ru, us): " c
+                # 转换为小写
+                c=$(echo "$c" | tr '[:upper:]' '[:lower:]')
+                echo -e "${YELLOW}>>> 正在下载 $c IP 段数据...${NC}"
+                
+                # 增加下载校验
+                if curl -sL "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" -o /tmp/ip_list.txt; then
+                    if [ -s /tmp/ip_list.txt ] && ! grep -q "DOCTYPE" /tmp/ip_list.txt; then
+                        while read line; do echo "deny $line;" >> "$FW_DIR/geo.conf"; done < /tmp/ip_list.txt
+                        rm /tmp/ip_list.txt
+                        safe_reload
+                    else
+                        echo -e "${RED}❌ 下载失败或国家代码无效${NC}"
+                    fi
+                else
+                    echo -e "${RED}❌ 网络连接失败${NC}"
+                fi
+                pause_prompt;; 
+            
+            5)
+                # 恶意 UA 拦截逻辑
+                echo -e "这将屏蔽常见扫描器: curl, wget, python, go-http, sqlmap 等。"
+                read -p "是否开启? (y/n): " bot_confirm
+                if [ "$bot_confirm" == "y" ]; then
+                    # 写入 Nginx 格式的 UA 屏蔽规则
+                    cat > "$FW_DIR/bots.conf" <<EOF
+if (\$http_user_agent ~* (Scrapy|Curl|HttpClient|Java|Wget|Python|Go-http-client|SQLMap|Nmap|Nikto|Havij)) { return 403; }
+EOF
         esac
-    done 
+    done
 }
 
 # ================= 🆕 动态云端应用商店 =================
@@ -928,24 +1033,24 @@ function app_update_manager() {
 # --- 基础操作函数 ---
 function init_gateway() { 
     local m=$1
-    # 1. 确保网络存在
-    if ! docker network ls | grep -q proxy-net; then 
-        docker network create proxy-net >/dev/null
-    fi
+    # 1. 确保网络和目录
+    if ! docker network ls | grep -q proxy-net; then docker network create proxy-net >/dev/null; fi
+    mkdir -p "$GATEWAY_DIR" "$LOG_DIR" "$FW_DIR"
     
-    # 2. 确保目录存在
-    mkdir -p "$GATEWAY_DIR" "$LOG_DIR"
+    # 2. 初始化空配置文件，防止挂载报错
+    touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf" "$FW_DIR/bots.conf"
+
     cd "$GATEWAY_DIR"
     
-    # 3. 生成 Nginx 配置文件
+    # 3. Nginx 优化配置
     echo "client_max_body_size 1024m;" > upload_size.conf
     echo "proxy_read_timeout 600s;" >> upload_size.conf
     echo "proxy_send_timeout 600s;" >> upload_size.conf
     
-    # 4. 生成 Docker Compose 文件 (集成 Socket Proxy)
+    # 4. 生成 Docker Compose (集成有安全功能)
     cat > docker-compose.yml <<EOF
 services:
-  # [新增] Socket 安全代理：作为盾牌，拦截危险的 Docker 指令
+  # [安全盾牌] Socket 代理：隔离 Docker API 风险
   socket-proxy:
     image: tecnativa/docker-socket-proxy
     container_name: gateway_socket_proxy
@@ -953,13 +1058,14 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      - CONTAINERS=1  # 允许查询容器
-      - NETWORKS=1    # 允许查询网络
-      - INFO=1        # 允许查询系统信息
-      - POST=0        # ⛔ 禁止所有修改/删除操作 (核心安全配置)
+      - CONTAINERS=1
+      - NETWORKS=1
+      - INFO=1
+      - POST=0  # 禁止修改
     networks:
       - "proxy-net"
 
+  # [核心网关] Nginx
   nginx-proxy:
     image: nginxproxy/nginx-proxy
     container_name: gateway_proxy
@@ -968,48 +1074,47 @@ services:
       - "443:443"
     logging: 
       driver: "json-file"
-      options: 
-        max-size: "10m" 
-        max-file: "3"
+      options: {max-size: "10m", max-file: "3"}
     volumes: 
       - conf:/etc/nginx/conf.d
       - vhost:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - certs:/etc/nginx/certs:ro
+      
+      # === 防火墙挂载区 ===
       - ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro
       - ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro
+      # [新增] bots.conf
+      - ../firewall/bots.conf:/etc/nginx/conf.d/z_bots.conf:ro
+      # ==================
+      
       - ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro
       - ../logs:/var/log/nginx
-      # ⚠️ 注意：此处不再挂载 /var/run/docker.sock
     environment: 
       - "TRUST_DOWNSTREAM_PROXY=true"
-      - "DOCKER_HOST=tcp://gateway_socket_proxy:2375" # 指向安全代理
+      - "DOCKER_HOST=tcp://gateway_socket_proxy:2375"
     networks: 
       - "proxy-net"
     depends_on:
       - socket-proxy
     restart: always
 
+  # [证书伴侣] ACME
   acme-companion:
     image: nginxproxy/acme-companion
     container_name: gateway_acme
-    logging: 
-      driver: "json-file" 
-      options: 
-        max-size: "10m" 
-        max-file: "3"
+    logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
     volumes: 
       - conf:/etc/nginx/conf.d
       - vhost:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - certs:/etc/nginx/certs:rw
       - acme:/etc/acme.sh
-      # ⚠️ 此处也不挂载 Socket，改用代理
     environment: 
       - "DEFAULT_EMAIL=admin@localhost.com"
       - "NGINX_PROXY_CONTAINER=gateway_proxy"
       - "ACME_CA_URI=https://acme-v02.api.letsencrypt.org/directory"
-      - "DOCKER_HOST=tcp://gateway_socket_proxy:2375" # 指向安全代理
+      - "DOCKER_HOST=tcp://gateway_socket_proxy:2375"
     networks: 
       - "proxy-net"
     depends_on: 
@@ -1017,7 +1122,7 @@ services:
       - "socket-proxy"
     restart: always
 
-  # Watchtower 需要执行更新(删除旧容器/启动新容器)，所以必须挂载真实 Socket
+  # [自动更新] Watchtower
   watchtower:
     image: containrrr/watchtower
     container_name: gateway_watchtower
@@ -1043,11 +1148,10 @@ networks:
     external: true
 EOF
 
-    # 5. 启动逻辑
+    # 5. 启动
     local cmd=${DOCKER_COMPOSE_CMD:-"docker compose"}
-
     if $cmd up -d --remove-orphans >/dev/null 2>&1; then 
-        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关启动成功 (已集成 SocketProxy 安全隔离)${NC}"
+        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关重建完成 (已挂载爬虫拦截规则)${NC}"
     else 
         echo -e "${RED}✘ 网关启动失败${NC}"
         [ "$m" == "force" ] && $cmd up -d
