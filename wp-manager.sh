@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.2 (快捷方式: wp)"
+VERSION="V9.21 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -555,7 +555,7 @@ function fail2ban_manager() {
         echo -e "${YELLOW}=== 👮 Fail2Ban 严厉模式 (3次即封) ===${NC}"
         echo -e "当前状态: $(systemctl is-active fail2ban 2>/dev/null || echo '未安装')"
         echo "--------------------------"
-        echo " 1. 应用严厉策略 (SSH + Nginx防扫)"
+        echo " 1. 安装严厉策略 (SSH + Nginx防扫)"
         echo " 2. 查看被封禁 IP"
         echo " 3. 解封指定 IP"
         echo " 4. 查看拦截日志"
