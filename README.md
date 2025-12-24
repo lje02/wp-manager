@@ -19,9 +19,7 @@ sudo apt-get install ca-certificates curl gnupg
 
 
 
-curl -sL https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh -o wp-manager.sh
-chmod +x wp-manager.sh
-./wp-manager.sh
+curl -O https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh && chmod +x wp-manager.sh && ./wp-manager.sh
 
 首次运行会自动安装依赖并初始化网关，创建快捷命令 wp。
 
