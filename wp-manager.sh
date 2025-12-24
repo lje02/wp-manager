@@ -546,33 +546,116 @@ function component_manager() {
     done 
 }
 
-function fail2ban_manager() { 
-    while true; do 
-        clear; echo -e "${YELLOW}=== 👮 Fail2Ban 防护专家 ===${NC}"
-        echo " 1. 安装/重置 (3次封24h)"
-        echo " 2. 查看被封禁 IP"
+function fail2ban_manager() {
+    # 定义日志路径 (对应脚本顶部的配置)
+    local nginx_log="$LOG_DIR/access.log"
+    
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 👮 Fail2Ban 自动防御系统 (V9.2 Pro) ===${NC}"
+        echo -e "当前状态: $(systemctl is-active fail2ban 2>/dev/null || echo '未安装')"
+        echo "--------------------------"
+        echo " 1. 安装/重置防御策略 (SSH + Nginx防扫)"
+        echo " 2. 查看被封禁 IP 列表"
         echo " 3. 解封指定 IP"
+        echo " 4. 查看 Nginx 攻击拦截日志"
         echo " 0. 返回上一级"
         echo "--------------------------"
-        read -p "请输入选项 [0-3]: " o
-        case $o in 
-            0) return;; 
-            1) echo "安装配置中..."; if [ -f /etc/debian_version ]; then apt-get install -y fail2ban; lp="/var/log/auth.log"; else yum install -y fail2ban; lp="/var/log/secure"; fi; cat >/etc/fail2ban/jail.local <<EOF
-[DEFAULT]
-ignoreip=127.0.0.1/8
-bantime=86400
-maxretry=3
-[sshd]
-enabled=true
-port=ssh
-logpath=$lp
-backend=systemd
+        read -p "请输入选项 [0-4]: " o
+        
+        case $o in
+            0) return;;
+            
+            1)
+                echo -e "${YELLOW}>>> 正在安装与配置 Fail2Ban...${NC}"
+                
+                # 1. 检查日志文件是否存在 (防止Fail2Ban启动失败)
+                if [ ! -f "$nginx_log" ]; then
+                    echo -e "${RED}未找到 Nginx 日志文件: $nginx_log${NC}"
+                    echo -e "提示: 请先运行 '99. 重建网关' 以确保日志目录正确挂载。"
+                    pause_prompt
+                    continue
+                fi
+
+                # 2. 安装软件
+                if [ -f /etc/debian_version ]; then 
+                    apt-get update && apt-get install -y fail2ban
+                    ssh_log="/var/log/auth.log"
+                else 
+                    yum install -y fail2ban
+                    ssh_log="/var/log/secure"
+                fi
+
+                # 3. 创建 Nginx 扫描过滤规则
+                # 规则说明: 匹配 Nginx 日志中的 403(禁止), 404(未找到), 444(无响应) 状态码
+                cat > /etc/fail2ban/filter.d/nginx-scan.conf <<EOF
+[Definition]
+failregex = ^<HOST> -.*"(GET|POST|HEAD).*" (404|444|403) .*$
+ignoreregex =
 EOF
-            systemctl enable fail2ban; systemctl restart fail2ban; echo "配置完成"; pause_prompt;; 
-            2) fail2ban-client status sshd 2>/dev/null|grep Banned; pause_prompt;; 
-            3) read -p "输入 IP: " i; fail2ban-client set sshd unbanip $i; echo "已解封"; pause_prompt;; 
+
+                # 4. 生成核心配置文件 jail.local
+                cat > /etc/fail2ban/jail.local <<EOF
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1
+bantime  = 86400    ; 封禁时间：1天 (秒)
+findtime = 300      ; 统计窗口：5分钟
+maxretry = 5        ; 允许重试次数
+
+# --- SSH 防爆破 ---
+[sshd]
+enabled = true
+port    = ssh
+logpath = $ssh_log
+backend = systemd
+maxretry = 3
+
+# --- Nginx 恶意扫描/WAF联动 ---
+[nginx-scan]
+enabled = true
+filter  = nginx-scan
+logpath = $nginx_log
+port    = http,https
+maxretry = 10       ; 5分钟内扫描错误10次即封禁
+action  = iptables-allports[name=nginx-scan]
+EOF
+
+                # 5. 重启服务
+                systemctl enable fail2ban
+                systemctl restart fail2ban
+                
+                echo -e "${GREEN}✔ 策略已下发${NC}"
+                echo -e "监控日志: $nginx_log"
+                echo -e "防御规则: 5分钟内 10次 404/403 -> 封禁 24小时"
+                pause_prompt
+                ;;
+                
+            2)
+                echo -e "${CYAN}=== 当前被封禁的 IP ===${NC}"
+                echo -e "【SSH 监狱】"
+                fail2ban-client status sshd 2>/dev/null | grep "Banned IP list:"
+                echo -e "\n【Nginx 扫号监狱】"
+                fail2ban-client status nginx-scan 2>/dev/null | grep "Banned IP list:"
+                pause_prompt
+                ;;
+                
+            3)
+                read -p "请输入要解封的 IP: " ip
+                if [ ! -z "$ip" ]; then
+                    fail2ban-client set sshd unbanip $ip
+                    fail2ban-client set nginx-scan unbanip $ip
+                    echo -e "${GREEN}✔ 已尝试从所有监狱中解封 $ip${NC}"
+                fi
+                pause_prompt
+                ;;
+            
+            4)
+                echo -e "${YELLOW}>>> 正在查看最近 Fail2Ban 拦截记录...${NC}"
+                grep "Ban " /var/log/fail2ban.log | tail -n 20
+                pause_prompt
+                ;;
         esac
-    done 
+    done
 }
 
 function waf_manager() { 
