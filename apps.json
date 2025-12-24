@@ -34,4 +34,9 @@
     "name": "Openlist",
     "description": "网盘挂载"
   }
+  {
+    "key": "easyimage",
+    "name": "Easyimage",
+    "description": "简单图床"
+  }
 ]
