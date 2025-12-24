@@ -645,12 +645,13 @@ function traffic_manager() {
     # 内部函数：安全重载 Nginx
     function safe_reload() {
         echo -e "${YELLOW}>>> 正在测试 Nginx 配置...${NC}"
+        # 预检配置，防止写错导致网关挂掉
         if docker exec gateway_proxy nginx -t >/dev/null 2>&1; then
             docker exec gateway_proxy nginx -s reload
             echo -e "${GREEN}✔ 配置生效${NC}"
         else
             echo -e "${RED}❌ 配置有误，Nginx 拒绝加载！${NC}"
-            echo -e "请检查刚才输入的 IP 或规则是否正确。"
+            echo -e "请检查刚才输入的规则是否正确，或尝试清空规则。"
         fi
     }
 
@@ -685,13 +686,12 @@ function traffic_manager() {
             
             1) 
                 echo -e "1. 黑名单 (Deny) - 禁止访问"
-                echo -e "2. 白名单 (Allow) - 允许访问 (需配合 deny all 使用，慎用)"
+                echo -e "2. 白名单 (Allow) - 允许访问 (需配合 deny all 使用)"
                 read -p "请选择类型 [1/2]: " type
                 if [ "$type" == "1" ]; then rule="deny"; else rule="allow"; fi
                 
                 read -p "请输入 IP 或网段 (如 1.2.3.4 或 1.2.3.0/24): " ip
                 if validate_ip "$ip"; then
-                    # 查重
                     if grep -q "$ip;" "$FW_DIR/access.conf"; then
                         echo -e "${YELLOW}该 IP 已存在于列表中${NC}"
                     else
@@ -720,7 +720,6 @@ function traffic_manager() {
                 echo "--------------------------"
                 read -p "请输入要删除的 IP (输入内容): " del_ip
                 if [ ! -z "$del_ip" ]; then
-                    # 创建临时文件以防 sed 出错
                     sed -i "/$del_ip;/d" "$FW_DIR/access.conf"
                     echo -e "${GREEN}已删除包含 $del_ip 的规则${NC}"
                     safe_reload
@@ -729,11 +728,9 @@ function traffic_manager() {
 
             4) 
                 read -p "请输入国家代码 (如 cn, ru, us): " c
-                # 转换为小写
                 c=$(echo "$c" | tr '[:upper:]' '[:lower:]')
                 echo -e "${YELLOW}>>> 正在下载 $c IP 段数据...${NC}"
                 
-                # 增加下载校验
                 if curl -sL "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" -o /tmp/ip_list.txt; then
                     if [ -s /tmp/ip_list.txt ] && ! grep -q "DOCTYPE" /tmp/ip_list.txt; then
                         while read line; do echo "deny $line;" >> "$FW_DIR/geo.conf"; done < /tmp/ip_list.txt
@@ -748,16 +745,35 @@ function traffic_manager() {
                 pause_prompt;; 
             
             5)
-                # 恶意 UA 拦截逻辑
+                # [修复] 补全了这里的逻辑
                 echo -e "这将屏蔽常见扫描器: curl, wget, python, go-http, sqlmap 等。"
-                read -p "是否开启? (y/n): " bot_confirm
+                read -p "是否开启? (y=开启, n=关闭): " bot_confirm
                 if [ "$bot_confirm" == "y" ]; then
-                    # 写入 Nginx 格式的 UA 屏蔽规则
+                    # 1. 写入配置
                     cat > "$FW_DIR/bots.conf" <<EOF
 if (\$http_user_agent ~* (Scrapy|Curl|HttpClient|Java|Wget|Python|Go-http-client|SQLMap|Nmap|Nikto|Havij)) { return 403; }
 EOF
+                    echo -e "${GREEN}>>> 已写入爬虫拦截规则${NC}"
+                    safe_reload
+                else
+                    # 2. 清空配置 (相当于关闭)
+                    echo "" > "$FW_DIR/bots.conf"
+                    echo -e "${YELLOW}>>> 已关闭爬虫拦截${NC}"
+                    safe_reload
+                fi
+                pause_prompt;; 
+
+            6) 
+                read -p "确定清空所有 IP、国家和爬虫规则吗? (y/n): " confirm
+                if [ "$confirm" == "y" ]; then
+                    echo "" > "$FW_DIR/access.conf"
+                    echo "" > "$FW_DIR/geo.conf"
+                    echo "" > "$FW_DIR/bots.conf"
+                    safe_reload
+                fi
+                pause_prompt;; 
         esac
-    done
+    done 
 }
 
 # ================= 🆕 动态云端应用商店 =================
