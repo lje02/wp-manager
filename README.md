@@ -18,6 +18,8 @@ sudo apt-get update
 sudo apt-get install ca-certificates curl gnupg
 
 
+bash <(curl -sL https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh)
+
 
 curl -O https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh && chmod +x wp-manager.sh && ./wp-manager.sh
 
