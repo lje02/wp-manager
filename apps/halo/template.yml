@@ -1,0 +1,23 @@
+services:
+  halo:
+    image: halohub/halo:2.20
+    container_name: {{APP_NAME}}_app
+    restart: always
+    environment:
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=8090
+      - HALO_EXTERNAL_URL=https://{{DOMAIN}}/
+      - HALO_DB_TYPE=h2
+    volumes:
+      - halo_data:/root/.halo2
+    networks:
+      - proxy-net
+
+volumes:
+  halo_data:
+
+networks:
+  proxy-net:
+    external: true
