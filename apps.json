@@ -38,5 +38,10 @@
     "key": "easyimage",
     "name": "Easyimage",
     "description": "简单图床"
+  },
+  {
+    "key": "halo",
+    "name": "Halo 2.x",
+    "description": "强大易用的 Java 开源建站工具"
   }
 ]
