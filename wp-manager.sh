@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.3 (快捷方式: wp)"
+VERSION="V9.31 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -1028,6 +1028,87 @@ function traffic_stats() {
         esac
     done
 }
+# --- 5. 系统清理模块 ---
+function system_cleanup() {
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🧹 系统垃圾清理大师 ===${NC}"
+        echo -e "当前磁盘使用率: $(df -h / | awk 'NR==2 {print $5}')"
+        echo "--------------------------"
+        echo " 1. Docker 深度瘦身 (删除未使用的镜像/缓存)"
+        echo " 2. 扫描并清理 孤儿证书 (已删站点的残留SSL)"
+        echo " 3. 强制刷新 网关配置 (Nginx Reload)"
+        echo " 0. 返回"
+        echo "--------------------------"
+        read -p "请选择 [0-3]: " c
+        case $c in
+            0) return;;
+            
+            1) 
+                echo -e "${YELLOW}>>> 正在执行 Docker 深度清理...${NC}"
+                echo -e "这将删除所有停止的容器、无用的网络和**未被使用的镜像**。"
+                read -p "确认执行? (y/n): " confirm
+                if [ "$confirm" == "y" ]; then
+                    docker system prune -a -f
+                    echo -e "${GREEN}✔ 清理完成！空间已释放。${NC}"
+                else
+                    echo "已取消"
+                fi
+                pause_prompt
+                ;;
+                
+            2)
+                echo -e "${YELLOW}>>> 正在扫描孤儿证书...${NC}"
+                # 逻辑：遍历 certs 容器内的证书，对比 SITES_DIR 目录
+                # 如果证书存在，但 sites 目录下没有对应文件夹，视为垃圾
+                
+                # 1. 获取所有证书文件名 (去除后缀)
+                certs=$(docker exec gateway_acme ls /etc/nginx/certs 2>/dev/null | grep "\.crt$" | sed 's/\.crt//g')
+                
+                if [ -z "$certs" ]; then
+                    echo "未找到任何证书。"; pause_prompt; continue
+                fi
+
+                count=0
+                found_orphan=0
+                
+                for domain in $certs; do
+                    # 忽略 default 证书
+                    if [ "$domain" == "default" ]; then continue; fi
+                    
+                    # 检查是否存在对应的站点目录
+                    if [ ! -d "$SITES_DIR/$domain" ]; then
+                        echo -e "${RED}发现残留证书: $domain${NC}"
+                        read -p "  └─ 确认删除该证书? (y/n): " del
+                        if [ "$del" == "y" ]; then
+                            docker exec gateway_acme rm -f "/etc/nginx/certs/$domain.crt" "/etc/nginx/certs/$domain.key" "/etc/nginx/certs/$domain.chain.pem" "/etc/nginx/certs/$domain.dhparam.pem" 2>/dev/null
+                            echo -e "     ${GREEN}✔ 已删除${NC}"
+                            ((count++))
+                        fi
+                        found_orphan=1
+                    fi
+                done
+                
+                if [ "$found_orphan" -eq 0 ]; then
+                    echo -e "${GREEN}✔ 太棒了，你的系统很干净，没有残留证书。${NC}"
+                else
+                    echo -e "共清理了 $count 个残留域名证书。"
+                fi
+                pause_prompt
+                ;;
+                
+            3)
+                echo -e "${YELLOW}>>> 正在重载 Nginx 网关...${NC}"
+                if docker exec gateway_proxy nginx -s reload; then
+                    echo -e "${GREEN}✔ 网关刷新成功${NC}"
+                else
+                    echo -e "${RED}❌ 刷新失败，请检查网关容器状态${NC}"
+                fi
+                pause_prompt
+                ;;
+        esac
+    done
+}
 
 function app_store() {
     # 依赖检查：我们需要 jq 来解析 JSON
@@ -1652,6 +1733,7 @@ function show_menu() {
     echo " 14. 组件版本升降级 (PHP/DB)"
     echo -e " 15. ${GREEN}更新应用/站点 (Pull Latest)${NC}"
     echo -e " 16. ${GREEN}站点访问统计 (GoAccess)${NC}"
+	echo -e " 17. ${GREEN}系统清理 (清理垃圾/证书)${NC}"
     
     echo ""
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
@@ -1709,6 +1791,7 @@ while true; do
         14) component_manager;; 
         15) app_update_manager;;
         16) traffic_stats;;
+		17) system_cleanup;;
 
         # === 数据与工具 ===
         20) wp_toolbox;; 
