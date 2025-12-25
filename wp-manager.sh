@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.21 (快捷方式: wp)"
+VERSION="V9.3 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -55,6 +55,26 @@ function install_shortcut() {
         ln -sf "$script_path" /usr/bin/wp && chmod +x "$script_path"
         echo -e "${GREEN}>>> 快捷指令 'wp' 已安装 (输入 wp 即可启动)${NC}"
     fi
+}
+# === Rclone 依赖检查与配置 ===
+function check_rclone() {
+    if ! command -v rclone >/dev/null 2>&1; then
+        echo -e "${YELLOW}>>> 正在安装 Rclone (用于云端备份)...${NC}"
+        curl https://rclone.org/install.sh | bash
+    fi
+}
+
+function configure_rclone() {
+    check_rclone
+    clear
+    echo -e "${YELLOW}=== ☁️ 配置云端存储 (Rclone) ===${NC}"
+    echo -e "你需要配置一个远程存储 (如 Google Drive, OneDrive, S3)。"
+    echo -e "配置名称(Name)请务必填写: ${GREEN}remote${NC}"
+    echo "------------------------------------------------"
+    echo "按回车开始配置，配置完成后输入 q 退出..."
+    read
+    rclone config
+    pause_prompt
 }
 
 function check_dependencies() {
@@ -555,7 +575,7 @@ function fail2ban_manager() {
         echo -e "${YELLOW}=== 👮 Fail2Ban 严厉模式 (3次即封) ===${NC}"
         echo -e "当前状态: $(systemctl is-active fail2ban 2>/dev/null || echo '未安装')"
         echo "--------------------------"
-        echo " 1. 安装严厉策略 (SSH + Nginx防扫)"
+        echo " 1. 应用严厉策略 (SSH + Nginx防扫)"
         echo " 2. 查看被封禁 IP"
         echo " 3. 解封指定 IP"
         echo " 4. 查看拦截日志"
@@ -1336,57 +1356,213 @@ server { listen 80; server_name localhost; root /var/www/html; index index.php; 
 EOF
 cd "$s" && docker compose restart nginx; echo "OK";; esac; pause_prompt; done; }
 
+# === 核心逻辑：执行单个站点备份 ===
+# 参数: $1 = 域名
+function perform_backup_logic() {
+    local site_domain=$1
+    local s_path="$SITES_DIR/$site_domain"
+    
+    if [ ! -d "$s_path" ]; then
+        echo "跳过: $site_domain (目录不存在)"
+        return
+    fi
+    
+    check_rclone
+    # 检查云端配置
+    local has_remote=0
+    if rclone listremotes 2>/dev/null | grep -q "remote:"; then has_remote=1; fi
+
+    local b_name="${site_domain}_$(date +%Y%m%d_%H%M%S)"
+    local temp_dir="/tmp/$b_name"
+    local archive_name="$b_name.tar.gz"
+    
+    echo -e "${CYAN}>>> [Backup] 正在备份: $site_domain${NC}"
+    mkdir -p "$temp_dir"
+
+    # 1. 复制配置文件 (所有应用适用)
+    cp "$s_path/docker-compose.yml" "$temp_dir/" 2>/dev/null
+    cp "$s_path/"*.conf "$temp_dir/" 2>/dev/null
+    cp "$s_path/"*.ini "$temp_dir/" 2>/dev/null
+    # 兼容应用商店的数据目录
+    if [ -d "$s_path/data" ]; then cp -r "$s_path/data" "$temp_dir/"; fi
+
+    # 2. 智能数据库导出 (MySQL/MariaDB)
+    if [ -f "$s_path/docker-compose.yml" ]; then
+        pwd=$(grep "MYSQL_ROOT_PASSWORD" "$s_path/docker-compose.yml" | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
+        if [ ! -z "$pwd" ]; then
+            db_container=$(docker compose -f "$s_path/docker-compose.yml" ps -q db 2>/dev/null)
+            if [ ! -z "$db_container" ]; then
+                echo " - 导出数据库 SQL..."
+                docker exec "$db_container" mysqldump -u root -p"$pwd" --all-databases > "$temp_dir/db.sql" 2>/dev/null
+            fi
+        fi
+    fi
+
+    # 3. 智能数据卷提取 (针对 WP 的 wp-content)
+    app_container=$(docker compose -f "$s_path/docker-compose.yml" ps -q wordpress 2>/dev/null)
+    if [ ! -z "$app_container" ]; then
+        echo " - 提取 Docker 数据卷 (wp-content)..."
+        docker run --rm --volumes-from "$app_container" -v "$temp_dir":/backup alpine tar czf /backup/wp_content.tar.gz -C /var/www/html wp-content 2>/dev/null
+    fi
+
+    # 4. 打包与存储
+    echo " - 生成压缩包..."
+    cd /tmp && tar czf "$archive_name" "$b_name"
+    
+    local local_backup_dir="$BASE_DIR/backups"
+    mkdir -p "$local_backup_dir"
+    mv "/tmp/$archive_name" "$local_backup_dir/"
+    echo -e "${GREEN}✔ 本地备份保存至: $local_backup_dir/$archive_name${NC}"
+
+    # 5. 云端上传
+    if [ "$has_remote" -eq 1 ]; then
+        echo -e "${YELLOW} - 正在上传至云端 (remote:wp_backups/)...${NC}"
+        rclone copy "$local_backup_dir/$archive_name" "remote:wp_backups/"
+    fi
+    
+    rm -rf "$temp_dir"
+    write_log "Backup completed for $site_domain"
+}
+
+# === 核心逻辑：执行还原 ===
+# 参数: $1 = 备份文件路径, $2 = 目标域名
+function perform_restore_logic() {
+    local backup_file=$1
+    local target_domain=$2
+    local target_dir="$SITES_DIR/$target_domain"
+
+    if [ ! -f "$backup_file" ]; then echo "错误: 文件不存在 $backup_file"; return; fi
+
+    echo -e "${YELLOW}>>> [Restore] 正在还原到: $target_domain${NC}"
+    echo -e "${RED}⚠️  警告: 目标目录将被清空并覆盖！${NC}"
+    
+    # 1. 解压备份
+    local tar_dir=$(tar tf "$backup_file" | head -1 | cut -f1 -d"/")
+    tar xzf "$backup_file" -C /tmp
+    local restore_path="/tmp/$tar_dir"
+
+    # 2. 清理旧环境
+    if [ -d "$target_dir" ]; then
+        echo " - 停止旧容器..."
+        cd "$target_dir" && docker compose down >/dev/null 2>&1
+        rm -rf "$target_dir"
+    fi
+    mkdir -p "$target_dir"
+
+    # 3. 恢复配置文件
+    echo " - 恢复配置文件..."
+    cp -r "$restore_path"/* "$target_dir/" 2>/dev/null
+    
+    # 4. 启动容器 (初始化环境)
+    echo " - 启动容器..."
+    cd "$target_dir" && docker compose up -d
+
+    # 5. 恢复 WordPress 数据卷 (如果有)
+    if [ -f "$target_dir/wp_content.tar.gz" ]; then
+        echo " - 恢复 Docker 数据卷 (wp-content)..."
+        # 等待容器卷初始化
+        sleep 5
+        app_c=$(docker compose ps -q wordpress)
+        if [ ! -z "$app_c" ]; then
+            docker run --rm --volumes-from "$app_c" -v "$target_dir":/backup alpine sh -c "tar xzf /backup/wp_content.tar.gz -C /var/www/html"
+        fi
+        rm "$target_dir/wp_content.tar.gz"
+    fi
+
+    # 6. 导入数据库 (如果有)
+    if [ -f "$target_dir/db.sql" ]; then
+        echo " - 等待数据库启动 (约15秒)..."
+        # 简单等待或循环检测
+        for i in {1..30}; do
+            if docker compose exec -T db mysqladmin ping -h localhost --silent >/dev/null 2>&1; then break; fi
+            echo -n "."
+            sleep 1
+        done
+        echo -e "\n - 导入数据库..."
+        pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
+        docker compose exec -T db mysql -u root -p"$pwd" < "db.sql"
+    fi
+
+    rm -rf "$restore_path"
+    echo -e "${GREEN}✔ 还原操作完成${NC}"
+    write_log "Restored $target_domain from $backup_file"
+}
+
 function backup_restore_ops() { 
+    check_rclone
+    local has_remote=0
+    if rclone listremotes 2>/dev/null | grep -q "remote:"; then has_remote=1; fi
+
     while true; do 
-        clear; echo "1.Backup备份 2.Restore还原 0.Back返回"; read -p "Sel: " b
+        clear; echo -e "${YELLOW}=== 📦 超级备份系统 (本地+云端) ===${NC}"
+        if [ "$has_remote" -eq 1 ]; then echo -e "☁️ 云端状态: ${GREEN}已连接 (remote:)${NC}"; else echo -e "☁️ 云端状态: ${RED}未配置 (仅本地)${NC}"; fi
+        echo "--------------------------"
+        echo " 1. 立即备份 (支持 导出SQL + 提取卷)"
+        echo " 2. 还原备份 (支持 本地/云端)"
+        echo " 3. 配置云端存储 (Rclone)"
+        echo " 4. 添加每日自动备份任务 (Cron)"
+        echo " 0. 返回上一级"
+        echo "--------------------------"
+        read -p "请输入选项 [0-4]: " b
+        
         case $b in 
             0) return;; 
+            
+            3) configure_rclone; has_remote=1;;
+
+            4) 
+                # 添加定时任务: 每天凌晨 02:00
+                (crontab -l 2>/dev/null | grep -v "wp-backup-daily"; echo "0 2 * * * /usr/bin/wp backup_all >> $LOG_DIR/backup.log 2>&1 #wp-backup-daily") | crontab -
+                echo -e "${GREEN}✔ 已添加定时任务 (02:00)${NC}"
+                pause_prompt
+                ;;
+
             1) 
-                ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; [ ! -d "$s" ] && continue
-                bd="$s/backups/$(date +%Y%m%d%H%M)"; mkdir -p "$bd"; cd "$s"
-                echo "正在备份数据库..."
-                pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}')
-                docker compose exec -T db mysqldump -u root -p"$pwd" --all-databases > "$bd/db.sql"
-                echo "正在备份文件..."
-                wp_c=$(docker compose ps -q wordpress)
-                docker run --rm --volumes-from $wp_c -v "$bd":/backup alpine tar czf /backup/files.tar.gz /var/www/html/wp-content
-                cp *.conf docker-compose.yml "$bd/" 2>/dev/null
-                echo "Backup saved to: $bd"; write_log "Backup $d"; pause_prompt;; 
+                ls -1 "$SITES_DIR"; echo "----------------"
+                read -p "输入域名 (输入 all 备份全部): " d
+                if [ "$d" == "all" ]; then
+                    for dir in "$SITES_DIR"/*; do [ -d "$dir" ] && perform_backup_logic "$(basename "$dir")"; done
+                else
+                    perform_backup_logic "$d"
+                fi
+                pause_prompt
+                ;;
+            
             2) 
-                ls -1 "$SITES_DIR"; read -p "Domain: " d; s="$SITES_DIR/$d"; bd="$s/backups"; [ ! -d "$bd" ] && continue
-                lt=$(ls -t "$bd"|head -1); if [ ! -z "$lt" ]; then echo "最新: $lt"; read -p "使用最新? (y/n): " u; [ "$u" == "y" ] && n="$lt"; fi
-                if [ -z "$n" ]; then ls -1 "$bd"; read -p "Name: " n; fi
-                bp="$bd/$n"; [ ! -d "$bp" ] && continue
+                echo -e "${YELLOW}=== 还原向导 ===${NC}"
+                echo "1. 从本地文件还原"
+                echo "2. 从云端下载并还原"
+                read -p "选择源 [1/2]: " src
                 
-                echo -e "${YELLOW}>>> 警告: 将覆盖站点 $d 的所有数据!${NC}"
-                read -p "确认还原? (yes/no): " confirm; [ "$confirm" != "yes" ] && continue
+                local backup_file=""
+                if [ "$src" == "2" ]; then
+                    if [ "$has_remote" -eq 0 ]; then echo "未配置云端"; pause_prompt; continue; fi
+                    rclone lsl "remote:wp_backups" | tail -n 10
+                    read -p "输入要下载的文件名: " fname
+                    echo "下载中..."
+                    rclone copy "remote:wp_backups/$fname" "/tmp/"
+                    backup_file="/tmp/$fname"
+                else
+                    ls -lh "$BASE_DIR/backups" 2>/dev/null
+                    read -p "输入本地文件全路径: " backup_file
+                fi
 
-                cd "$s" && docker compose down
-                echo "还原文件..."
-                vol=$(docker volume ls -q|grep "${d//./_}_wp_data")
-                # 临时容器挂载卷进行还原
-                docker run --rm -v $vol:/var/www/html -v "$bp":/backup alpine sh -c "rm -rf /var/www/html/* && tar xzf /backup/files.tar.gz -C /"
-                
-                echo "启动数据库..."
-                docker compose up -d db
-                
-                echo "等待数据库启动..."
-                for i in {1..60}; do
-                    if docker compose exec -T db mysqladmin ping -h localhost --silent >/dev/null 2>&1; then
-                        break
+                if [ -f "$backup_file" ]; then
+                    read -p "请输入要还原到的目标域名: " target_domain
+                    read -p "确认还原? (yes/no): " confirm
+                    if [ "$confirm" == "yes" ]; then
+                        perform_restore_logic "$backup_file" "$target_domain"
                     fi
-                    sleep 1
-                done
-
-                echo "导入数据库..."
-                pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml|awk -F': ' '{print $2}')
-                docker compose exec -T db mysql -u root -p"$pwd" < "$bp/db.sql"
-                
-                docker compose up -d
-                echo "Restored Successfully"; write_log "Restored $d"; pause_prompt;; 
+                else
+                    echo "文件未找到"
+                fi
+                [ "$src" == "2" ] && rm -f "$backup_file"
+                pause_prompt
+                ;;
         esac
     done 
 }
+
 function rebuild_gateway_action() {
     clear
     echo -e "${RED}⚠️  危险操作：重建核心网关${NC}"
@@ -1499,6 +1675,19 @@ function show_menu() {
 }
 
 # ================= 5. 主程序循环 =================
+# === 命令行模式处理 (用于 Cron 自动备份) ===
+if [ "$1" == "backup_all" ]; then
+    # 仅在后台运行备份，不启动菜单
+    check_rclone
+    echo "Starting Daily Backup: $(date)"
+    for dir in "$SITES_DIR"/*; do 
+        if [ -d "$dir" ]; then
+             perform_backup_logic "$(basename "$dir")"
+        fi
+    done
+    echo "Daily Backup Finished: $(date)"
+    exit 0
+fi
 check_dependencies
 install_shortcut
 if ! docker ps --format '{{.Names}}' | grep -q "^gateway_proxy$"; then echo "初始化网关..."; init_gateway "auto"; fi
