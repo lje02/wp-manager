@@ -3,17 +3,25 @@ services:
     image: halohub/halo:2.20
     container_name: {{APP_NAME}}_app
     restart: always
+    expose:
+      - "8090"
     environment:
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
       - LETSENCRYPT_EMAIL={{EMAIL}}
       - VIRTUAL_PORT=8090
       - HALO_EXTERNAL_URL=https://{{DOMAIN}}/
-      - HALO_DB_TYPE=h2
+      - JVM_OPTS=-Xmx512m -Xms256m
     volumes:
       - halo_data:/root/.halo2
     networks:
       - proxy-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/actuator/health/readiness"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   halo_data:
