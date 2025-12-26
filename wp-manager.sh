@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.31 (快捷方式: wp)"
+VERSION="V9.33 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -15,6 +15,7 @@ FW_DIR="$BASE_DIR/firewall"
 LOG_DIR="$BASE_DIR/logs"
 TG_CONF="$BASE_DIR/telegram.conf"
 LOG_FILE="$BASE_DIR/operation.log"
+REMARK_FILE="$BASE_DIR/site_remarks.txt"
 MONITOR_PID="$BASE_DIR/monitor.pid"
 MONITOR_SCRIPT="$BASE_DIR/monitor_daemon.sh"
 LISTENER_PID="$BASE_DIR/tg_listener.pid"
@@ -36,6 +37,7 @@ NC='\033[0m'
 mkdir -p "$SITES_DIR" "$GATEWAY_DIR" "$FW_DIR" "$LOG_DIR"
 touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf"
 [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE"
+[ ! -f "$REMARK_FILE" ] && touch "$REMARK_FILE"
 
 # ================= 2. 基础工具函数 =================
 
@@ -1352,7 +1354,7 @@ EOF
 function create_site() {
     read -p "1. 域名: " fd; host_ip=$(curl -s4 ifconfig.me); if command -v dig >/dev/null; then dip=$(dig +short $fd|head -1); else dip=$(getent hosts $fd|awk '{print $1}'); fi; if [ ! -z "$dip" ] && [ "$dip" != "$host_ip" ]; then echo -e "${RED}IP不符${NC}"; read -p "继续? (y/n): " f; [ "$f" != "y" ] && return; fi
     read -p "2. 邮箱: " email; read -p "3. DB密码: " db_pass
-    echo -e "${YELLOW}自定义版本? (默:PHP8.2/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust; pt="php8.2-fpm-alpine"; di="mariadb:10.6"; rt="7.0-alpine"
+    echo -e "${YELLOW}自定义版本? (默:PHP8.2/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust; pt="php8.2-fpm-alpine"; di="MySQL8.0"; rt="7.0-alpine"
     if [ "$cust" == "y" ]; then echo "PHP: 1.7.4 2.8.0 3.8.1 4.8.2 5.8.3 6.最新"; read -p "选: " p; case $p in 1) pt="php7.4-fpm-alpine";; 2) pt="php8.0-fpm-alpine";; 3) pt="php8.1-fpm-alpine";; 4) pt="php8.2-fpm-alpine";; 5) pt="php8.3-fpm-alpine";; 6) pt="fpm-alpine";; esac; echo "DB: 1.M5.7 2.M8.0 3.最新 4.Ma10.6 5.最新"; read -p "选: " d; case $d in 1) di="mysql:5.7";; 2) di="mysql:8.0";; 3) di="mysql:latest";; 4) di="mariadb:10.6";; 5) di="mariadb:latest";; esac; echo "Redis: 1.6.2 2.7.0 3.最新"; read -p "选: " r; case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; esac; fi
     pname=$(echo $fd|tr '.' '_'); sdir="$SITES_DIR/$fd"; [ -d "$sdir" ] && echo -e "已存在" && pause_prompt && return; mkdir -p "$sdir"
     cat > "$sdir/waf.conf" <<EOF
@@ -1421,7 +1423,78 @@ function create_redirect() { read -p "Src Domain: " s; read -p "Target URL: " t;
 
 function delete_site() { while true; do clear; echo "=== 🗑️ 删除网站 ==="; ls -1 "$SITES_DIR"; echo "----------------"; read -p "域名(0返回): " d; [ "$d" == "0" ] && return; if [ -d "$SITES_DIR/$d" ]; then read -p "确认? (y/n): " c; [ "$c" == "y" ] && cd "$SITES_DIR/$d" && docker compose down -v >/dev/null 2>&1 && cd .. && rm -rf "$SITES_DIR/$d" && echo "Deleted"; write_log "Deleted site $d"; fi; pause_prompt; done; }
 
-function list_sites() { clear; echo "=== 📂 站点列表 ==="; ls -1 "$SITES_DIR"; echo "----------------"; pause_prompt; }
+function list_sites() {
+    clear
+    echo -e "${YELLOW}=== 📂 站点列表与状态 ===${NC}"
+    # 表头格式化
+    printf "${CYAN}%-3s %-25s %-12s %-20s${NC}\n" "No." "域名 (Domain)" "状态" "备注 (Remark)"
+    echo "---------------------------------------------------------------"
+    
+    local i=1
+    # 遍历站点目录
+    for dir in "$SITES_DIR"/*; do
+        if [ -d "$dir" ]; then
+            domain=$(basename "$dir")
+            
+            # 1. 获取备注
+            remark=$(grep "^$domain|" "$REMARK_FILE" | cut -d'|' -f2)
+            if [ -z "$remark" ]; then remark="-"; fi
+
+            # 2. 获取容器状态 (简单的检查是否有Up状态的容器)
+            cd "$dir"
+            if docker compose ps | grep -q "Up"; then
+                status="${GREEN}● 运行中${NC}"
+            else
+                status="${RED}● 已停止${NC}"
+            fi
+
+            # 3. 输出表格行
+            printf "%-3s %-25s %-12b %-20s\n" "$i" "$domain" "$status" "$remark"
+            ((i++))
+        fi
+    done
+    echo "---------------------------------------------------------------"
+    echo -e "提示: 使用菜单 [18] 可修改站点备注"
+    pause_prompt
+}
+
+function manage_remarks() {
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 📝 站点备注管理 ===${NC}"
+        # 显示简易列表
+        local i=1
+        declare -A domain_map
+        for dir in "$SITES_DIR"/*; do
+            if [ -d "$dir" ]; then
+                d=$(basename "$dir")
+                r=$(grep "^$d|" "$REMARK_FILE" | cut -d'|' -f2)
+                echo -e " $i. $d \t [${CYAN}${r:-无}${NC}]"
+                domain_map[$i]=$d
+                ((i++))
+            fi
+        done
+        echo " 0. 返回"
+        echo "--------------------------"
+        read -p "请选择要修改备注的站点编号: " idx
+        
+        if [ "$idx" == "0" ]; then return; fi
+        
+        target_domain=${domain_map[$idx]}
+        if [ -z "$target_domain" ]; then echo "无效选择"; sleep 1; continue; fi
+        
+        echo -e "当前站点: ${GREEN}$target_domain${NC}"
+        read -p "请输入新备注 (例如: 个人博客 / 图床): " new_remark
+        
+        # 写入逻辑: 先删除旧的，再追加新的
+        if [ ! -z "$new_remark" ]; then
+            sed -i "/^$target_domain|/d" "$REMARK_FILE"
+            echo "$target_domain|$new_remark" >> "$REMARK_FILE"
+            echo -e "${GREEN}✔ 备注已更新${NC}"
+        fi
+        sleep 1
+    done
+}
 
 function cert_management() { while true; do clear; echo "1.列表 2.上传 3.重置 4.续签 0.返回"; read -p "选: " c; case $c in 0) return;; 1) docker exec gateway_proxy ls -lh /etc/nginx/certs|grep .crt; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "crt: " c; read -p "key: " k; docker cp "$c" gateway_acme:"/etc/nginx/certs/$d.crt"; docker cp "$k" gateway_acme:"/etc/nginx/certs/$d.key"; docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 3) read -p "域名: " d; docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key"; docker restart gateway_acme; echo "OK"; pause_prompt;; 4) docker exec gateway_acme /app/force_renew; echo "OK"; pause_prompt;; esac; done; }
 
@@ -1711,47 +1784,163 @@ function uninstall_cluster() {
     fi
 }
 
+function system_optimizer() {
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🚀 系统性能调优箱 ===${NC}"
+        # 检查 Swap 状态
+        swap_total=$(free -m | grep Swap | awk '{print $2}')
+        if [ "$swap_total" -eq 0 ]; then swap_status="${RED}未开启${NC}"; else swap_status="${GREEN}已开启 (${swap_total}MB)${NC}"; fi
+        
+        # 检查 BBR 状态
+        if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then bbr_status="${GREEN}已开启${NC}"; else bbr_status="${YELLOW}未开启${NC}"; fi
+
+        echo -e "当前 Swap: $swap_status | BBR: $bbr_status"
+        echo "------------------------------------------------"
+        echo " 1. 开启/设置 虚拟内存 (Swap) - 防止内存不足崩溃"
+        echo " 2. 开启 TCP BBR 加速 - 优化网络连接速度"
+        echo " 3. 系统网络测速 (Speedtest)"
+        echo " 0. 返回"
+        echo "------------------------------------------------"
+        read -p "请选择 [0-3]: " o
+        
+        case $o in
+            0) return;;
+            
+            1)
+                echo -e "${YELLOW}>>> 设置 Swap 虚拟内存${NC}"
+                echo "1. 1024MB (推荐 1G 内存机器)"
+                echo "2. 2048MB (推荐 2G+ 内存机器)"
+                echo "3. 关闭 Swap"
+                read -p "请选择大小: " s
+                if [ "$s" == "3" ]; then
+                    swapoff -a
+                    rm -f /swapfile
+                    sed -i '/\/swapfile/d' /etc/fstab
+                    echo -e "${GREEN}✔ Swap 已关闭${NC}"
+                else
+                    [ "$s" == "1" ] && sz="1G" || sz="2G"
+                    echo "正在创建 /swapfile (大小: $sz)..."
+                    fallocate -l $sz /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$([ "$sz" == "1G" ] && echo 1024 || echo 2048)
+                    chmod 600 /swapfile
+                    mkswap /swapfile
+                    swapon /swapfile
+                    if ! grep -q "/swapfile" /etc/fstab; then echo "/swapfile none swap sw 0 0" >> /etc/fstab; fi
+                    echo -e "${GREEN}✔ Swap 设置成功!${NC}"
+                fi
+                pause_prompt;;
+                
+            2)
+                echo -e "${YELLOW}>>> 开启 BBR 加速${NC}"
+                if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf; then
+                    echo "配置已存在，尝试重载..."
+                else
+                    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+                    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+                fi
+                sysctl -p
+                if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then echo -e "${GREEN}✔ BBR 启动成功${NC}"; else echo -e "${RED}❌ 启动失败，可能内核版本太低${NC}"; fi
+                pause_prompt;;
+                
+            3)
+                check_dependencies
+                echo -e "${YELLOW}>>> 正在安装 Speedtest CLI...${NC}"
+                # 使用 Docker 运行测速，免去安装依赖
+                docker run --rm --net=host gists/speedtest-cli
+                pause_prompt;;
+        esac
+    done
+}
+
+function db_admin_tool() {
+    clear
+    echo -e "${YELLOW}=== 🛢️ 数据库应急管理 (Adminer) ===${NC}"
+    echo -e "功能: 启动一个临时的 Web 管理面板来管理所有数据库。"
+    echo -e "注意: 使用完毕后请务必【销毁】，以保安全。"
+    echo "------------------------------------------------"
+    
+    # 检查是否已运行
+    if docker ps | grep -q "temp_adminer"; then
+        status="${GREEN}运行中${NC}"
+        port=$(docker port temp_adminer 8080 | awk -F: '{print $2}')
+        echo -e "状态: $status"
+        echo -e "地址: ${CYAN}http://$(curl -s4 ifconfig.me):$port${NC}"
+    else
+        echo -e "状态: ${RED}未启动${NC}"
+    fi
+    echo "------------------------------------------------"
+    echo " 1. 启动 Adminer (随机端口)"
+    echo " 2. 销毁 Adminer (安全退出)"
+    echo " 0. 返回"
+    echo "------------------------------------------------"
+    read -p "请选择: " o
+    
+    case $o in
+        0) return;;
+        1)
+            echo "正在启动..."
+            # 随机生成一个 10000-60000 的端口
+            rand_port=$(shuf -i 10000-60000 -n 1)
+            # 关键：连接到 proxy-net 和 default 网络，这样它能访问所有的数据库容器
+            docker run -d --name temp_adminer \
+                -p $rand_port:8080 \
+                --network proxy-net \
+                --restart no \
+                adminer >/dev/null 2>&1
+            
+            # 再连接到 default 网络 (如果你的数据库在 default)
+            docker network connect default temp_adminer >/dev/null 2>&1
+            
+            echo -e "${GREEN}✔ 启动成功!${NC}"
+            echo -e "访问地址: http://$(curl -s4 ifconfig.me):$rand_port"
+            echo -e "系统类型选 MySQL，服务器地址填写容器名 (如 ${CYAN}blog_db${NC} 或 ${CYAN}halo_db${NC})"
+            pause_prompt;;
+            
+        2)
+            docker rm -f temp_adminer >/dev/null 2>&1
+            echo -e "${GREEN}✔ 已销毁，安全无忧。${NC}"
+            pause_prompt;;
+    esac
+}
+
 # ================= 4. 菜单显示函数 =================
 function show_menu() {
     clear
-    echo -e "${GREEN}=== Docker 应用部署 ($VERSION) ===${NC}"
-    echo -e "${CYAN}===仅供个人使用 快捷键wp===${NC}"
-    echo "-----------------------------------------"
+    echo -e "${GREEN}=== Docker 智能部署系统 ($VERSION) ===${NC}"
+    echo "----------------------------------------------------------------"
     
+    # --- 1. 部署中心 ---
     echo -e "${YELLOW}[🚀 部署中心]${NC}"
-    echo " 1. 部署 WordPress 新站"
-    echo " 2. 部署 反向代理 (聚合/普通/端口)"
-    echo " 3. 部署 域名重定向 (301)"
-    echo -e " 4. ${GREEN}应用商店 (App Store)${NC}"
+    echo -e " 1. 部署 WordPress             2. 部署 反向代理"
+    echo -e " 3. 部署 301 重定向            4. ${GREEN}应用商店 (App Store)${NC}"
     
-    echo ""
+    echo "" 
+    
+    # --- 2. 运维管理 ---
     echo -e "${YELLOW}[🔧 运维管理]${NC}"
-    echo " 10. 查看站点列表"
-    echo " 11. 容器状态监控"
-    echo " 12. 删除指定站点"
-    echo " 13. 更换网站域名"
-    echo " 14. 组件版本升降级 (PHP/DB)"
-    echo -e " 15. ${GREEN}更新应用/站点 (Pull Latest)${NC}"
-    echo -e " 16. ${GREEN}站点访问统计 (GoAccess)${NC}"
-	echo -e " 17. ${GREEN}系统清理 (清理垃圾/证书)${NC}"
+    echo -e " 10. 站点列表 (含备注)         11. 容器状态监控"
+    echo -e " 12. 删除指定站点              13. 更新应用/站点"
+    echo -e " 14. 流量统计 (GoAccess)       15. 组件版本升降级"
+    echo -e " 16. 更换网站域名              17. 系统清理 (证书/垃圾)"
+    echo -e " 18. 管理站点备注              19. 系统优化 (Swap/BBR)"
     
     echo ""
+    
+    # --- 3. 数据与工具 ---
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
-    echo " 20. WP-CLI 瑞士军刀"
-    echo " 21. 数据库 导出/导入"
-    echo " 22. 整站 备份与还原"
-
-    echo ""
-    echo -e "${RED}[🛡️ 安全与审计]${NC}"
-    echo " 30. 安全防御中心 (审计/WAF)"
-    echo " 31. Telegram 通知"
-    echo " 32. 系统资源监控"
-    echo " 33. 脚本操作日志"
-    echo -e " 34. ${GREEN}容器运行日志 (找回密码)${NC}"
-    echo -e " 99. ${YELLOW}重建核心网关 (应用配置)${NC}"
+    echo -e " 20. WP-CLI 瑞士军刀           21. 备份/还原 (云端)"
+    echo -e " 22. 数据库管理 (Adminer)      23. 数据库 导入/导出 (CLI)"
     
-    echo "-----------------------------------------"
-    echo -e "${BLUE} u. 检查更新${NC} | ${RED}x. 卸载脚本${NC} | 0. 退出"
+    echo ""
+
+    # --- 4. 安全与审计 ---
+    echo -e "${YELLOW}[🛡️ 安全与审计]${NC}"
+    echo -e " 30. 安全防御中心 (WAF)        31. Telegram 通知"
+    echo -e " 32. 系统资源监控              33. 脚本操作日志"
+    echo -e " 34. 容器日志 (找密码)         99. 重建核心网关"
+
+    echo "----------------------------------------------------------------"
+    echo -e "${BLUE} u. 更新脚本${NC} | ${RED}x. 卸载脚本${NC} | 0. 退出"
     echo -n "请选择: "
     read option
 }
@@ -1784,32 +1973,35 @@ while true; do
         4) app_store;;
         
         # === 运维管理 ===
-        10) list_sites;;
+        10) list_sites;; 
         11) container_ops;; 
         12) delete_site;; 
-        13) change_domain;;  
-        14) component_manager;; 
-        15) app_update_manager;;
-        16) traffic_stats;;
-		17) system_cleanup;;
+        13) app_update_manager;; 
+        14) traffic_stats;; 
+        15) component_manager;; 
+        16) change_domain;;      # 更换域名
+        17) system_cleanup;; 
+        18) manage_remarks;; 
+        19) system_optimizer;;
 
         # === 数据与工具 ===
         20) wp_toolbox;; 
-        21) db_manager;; 
-        22) backup_restore_ops;; 
+        21) backup_restore_ops;; # 全站备份
+        22) db_admin_tool;;      # Adminer 网页管理
+        23) db_manager;;         # 命令行 SQL 导入导出
 
         # === 安全与审计 ===
         30) security_center;; 
         31) telegram_manager;; 
         32) sys_monitor;; 
         33) log_manager;; 
-        34) view_container_logs;;
+        34) view_container_logs;; 
         99) rebuild_gateway_action;;
 
-        # === 系统 ===
+        # === 系统操作 ===
         u|U) update_script;; 
         x|X) uninstall_cluster;; 
-        0) exit 0;; 
-        *) echo "无效选项，请重新输入"; sleep 1;;
+        0) exit 0;;
+        *) echo "无效选项"; sleep 1;;
     esac
 done
