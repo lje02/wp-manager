@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.32 (Optimized)"
+VERSION="V9.34 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -22,7 +22,7 @@ LISTENER_PID="$BASE_DIR/tg_listener.pid"
 LISTENER_SCRIPT="$BASE_DIR/tg_listener.sh"
 # 如果是海外机器，保持为空即可
 GH_PROXY="https://ghproxy.net/"
-# 自动更新源 (请替换为你自己的仓库地址)
+# 自动更新源
 UPDATE_URL="https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh"
 
 # 颜色定义
@@ -35,8 +35,7 @@ NC='\033[0m'
 
 # 初始化目录
 mkdir -p "$SITES_DIR" "$GATEWAY_DIR" "$FW_DIR" "$LOG_DIR"
-# [优化] 确保文件存在再挂载
-touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf" "$FW_DIR/bots.conf"
+touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf"
 [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE"
 [ ! -f "$REMARK_FILE" ] && touch "$REMARK_FILE"
 
@@ -51,6 +50,7 @@ function pause_prompt() {
     read -r
 }
 
+# [修改点] 快捷方式改为 wp
 function install_shortcut() {
     local script_path=$(readlink -f "$0")
     if [ ! -L "/usr/bin/wp" ] || [ "$(readlink -f "/usr/bin/wp")" != "$script_path" ]; then
@@ -58,7 +58,7 @@ function install_shortcut() {
         echo -e "${GREEN}>>> 快捷指令 'wp' 已安装 (输入 wp 即可启动)${NC}"
     fi
 }
-
+# === Rclone 依赖检查与配置 ===
 function check_rclone() {
     if ! command -v rclone >/dev/null 2>&1; then
         echo -e "${YELLOW}>>> 正在安装 Rclone (用于云端备份)...${NC}"
@@ -88,8 +88,7 @@ function check_dependencies() {
         echo -e "${YELLOW}>>> 正在安装依赖组件 (openssl)...${NC}"
         if [ -f /etc/debian_version ]; then apt-get install -y openssl; else yum install -y openssl; fi
     fi
-    # [优化] 移除 net-tools 强制依赖，优先检测 ss
-    if ! command -v netstat >/dev/null 2>&1 && ! command -v ss >/dev/null 2>&1; then
+    if ! command -v netstat >/dev/null 2>&1; then
         echo -e "${YELLOW}>>> 正在安装网络工具 (net-tools)...${NC}"
         if [ -f /etc/debian_version ]; then apt-get install -y net-tools; else yum install -y net-tools; fi
     fi
@@ -100,16 +99,19 @@ function check_dependencies() {
         write_log "Installed Docker"
     fi
 }
-
+# [补全] 容器冲突检测函数
 function check_container_conflict() {
     local base_name=$1
     local has_conflict=0
+    
+    # 检测常见后缀的容器是否存在 (_app, _db, _redis, _nginx, _worker)
     conflict_list=$(docker ps -a --format '{{.Names}}' | grep -E "^${base_name}_(app|db|redis|nginx|worker|redirect)$")
     
     if [ ! -z "$conflict_list" ]; then
-        echo -e "${RED}⚠️  检测到命名冲突！以下容器已存在:${NC}"
+        echo -e "${RED}⚠️  检测到命名冲突！以下容器已存在 (可能是之前的残留):${NC}"
         echo "$conflict_list"
         echo "-----------------------------------------"
+        echo -e "${YELLOW}如果不清理，部署将失败。${NC}"
         read -p "是否强制删除这些旧容器? (y/n): " confirm
         
         if [ "$confirm" == "y" ]; then
@@ -143,7 +145,7 @@ function normalize_url() {
 }
 
 function update_script() {
-    clear; echo -e "${GREEN}=== 脚本自动更新 ===${NC}"; echo -e "版本: $VERSION"; echo -e "源: GitHub"
+    clear; echo -e "${GREEN}=== 脚本自动更新 ===${NC}"; echo -e "版本: $VERSION"; echo -e "源: GitHub (lje02/wp-manager)"
     temp_file="/tmp/wp_manager_update.sh"
     if curl -f -L -s -o "$temp_file" "$UPDATE_URL" && head -n 1 "$temp_file" | grep -q "/bin/bash"; then
         mv "$temp_file" "$0"; chmod +x "$0"; echo -e "${GREEN}✔ 更新成功，正在重启...${NC}"; write_log "Updated script"; sleep 1; exec "$0"
@@ -214,8 +216,9 @@ chmod +x "$LISTENER_SCRIPT"
 
 # ================= 3. 业务功能函数 =================
 
+# [V9] 主机安全审计
 function server_audit() {
-    check_dependencies 
+    check_dependencies # 确保有 netstat
     while true; do
         clear; echo -e "${YELLOW}=== 🕵️ 主机安全审计 (V9) ===${NC}"
         
@@ -240,7 +243,6 @@ function server_audit() {
                 echo "--------------------------------------------------------"
                 printf "%-8s %-25s %-15s %-20s\n" "协议" "本地地址:端口" "状态" "进程PID/名称"
                 echo "--------------------------------------------------------"
-                # [改进] 兼容 ss 命令
                 if command -v netstat >/dev/null; then
                     netstat -tunlp | grep LISTEN | awk '{printf "%-8s %-25s %-15s %-20s\n", $1, $4, $6, $7}'
                 else
@@ -248,18 +250,18 @@ function server_audit() {
                 fi
                 echo "--------------------------------------------------------"
                 echo "常见高危端口: 3306(MySQL), 6379(Redis), 22(SSH - 如有弱密码)"
-                
-                # 深度检测
                 echo -e "\n${YELLOW}>>> 正在深度检测数据库风险...${NC}"
-                risky_ports=$(docker ps --format "{{.Names}} {{.Ports}}" | grep -E "0.0.0.0:(3306|6379|5432|27017)")
-                
-                if [ ! -z "$risky_ports" ]; then
-                    echo -e "${RED}🚨 严重警告！发现数据库端口直接暴露在公网：${NC}"
-                    echo "$risky_ports"
-                    echo -e "${YELLOW}建议立即修改 docker-compose.yml，移除 'ports' 映射，或改为 '127.0.0.1:3306:3306'${NC}"
-                else
-                    echo -e "${GREEN}✔ 数据库端口安全（未检测到公网暴露）${NC}"
-                fi
+    
+    # 检查所有容器，看是否有绑定到 0.0.0.0 的 3306/6379/5432 端口
+    risky_ports=$(docker ps --format "{{.Names}} {{.Ports}}" | grep -E "0.0.0.0:(3306|6379|5432|27017)")
+    
+    if [ ! -z "$risky_ports" ]; then
+                echo -e "${RED}🚨 严重警告！发现数据库端口直接暴露在公网：${NC}"
+                echo "$risky_ports"
+                echo -e "${YELLOW}建议立即修改 docker-compose.yml，移除 'ports' 映射，或改为 '127.0.0.1:3306:3306'${NC}"
+    else
+                echo -e "${GREEN}✔ 数据库端口安全（未检测到公网暴露）${NC}"
+    fi
                 pause_prompt;;
             2)
                 echo -e "\n${GREEN}>>> 正在执行安全扫描...${NC}"
@@ -271,6 +273,7 @@ function server_audit() {
                 # 2. 检查可疑目录 (/tmp, /var/tmp, /dev/shm) 下的可执行文件
                 echo -e "\n${CYAN}[Check 2] 检查可疑目录运行的进程 (/tmp, /dev/shm):${NC}"
                 suspicious_found=0
+                # 遍历 /proc 下所有的 pid
                 for pid in $(ls /proc | grep -E '^[0-9]+$'); do
                     if [ -d "/proc/$pid" ]; then
                         exe_link=$(readlink -f /proc/$pid/exe 2>/dev/null)
@@ -284,10 +287,12 @@ function server_audit() {
                 done
                 if [ "$suspicious_found" -eq 0 ]; then echo -e "${GREEN}✔ 未发现明显的可疑目录进程${NC}"; fi
                 
-                # 3. 检查文件被删除但仍在运行的进程
+                # 3. 检查文件被删除但仍在运行的进程 (Deleted binary)
                 echo -e "\n${CYAN}[Check 3] 检查已删除但仍在运行的二进制文件:${NC}"
+                deleted_found=0
                 ls -l /proc/*/exe 2>/dev/null | grep '(deleted)' | grep -v "docker" | grep -v "containerd" | while read line; do
                     echo -e "${YELLOW}⚠️  $line${NC}"
+                    deleted_found=1
                 done
                 
                 echo -e "\n--------------------------"
@@ -302,7 +307,7 @@ function security_center() {
     while true; do
         clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V9) ===${NC}"
         
-        # 状态检测
+        # 1. 防火墙状态
         if command -v ufw >/dev/null; then
             if ufw status | grep -q "active"; then FW_ST="${GREEN}● 运行中 (UFW)${NC}"; else FW_ST="${RED}● 未启动${NC}"; fi
         elif command -v firewall-cmd >/dev/null; then
@@ -311,12 +316,14 @@ function security_center() {
             FW_ST="${YELLOW}● 未安装${NC}"
         fi
 
+        # 2. Fail2Ban状态
         if command -v fail2ban-client >/dev/null; then
             if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● 运行中${NC}"; else F2B_ST="${RED}● 已停止${NC}"; fi
         else
             F2B_ST="${YELLOW}● 未安装${NC}"
         fi
 
+        # 3. WAF状态
         if [ -z "$(ls -A $SITES_DIR)" ]; then
             WAF_ST="${YELLOW}● 无站点${NC}"
         else
@@ -329,7 +336,7 @@ function security_center() {
             fi
         fi
 
-        echo -e " 1. 端口防火墙    [$FW_ST]"
+        echo -e " 1. 端口防火墙   [$FW_ST]"
         echo -e " 2. 流量访问控制 (Nginx Layer7)"
         echo -e " 3. SSH防暴力破解 [$F2B_ST]"
         echo -e " 4. 网站防火墙    [$WAF_ST]"
@@ -390,6 +397,7 @@ function wp_toolbox() {
             3) docker exec -u www-data "$container_name" wp plugin deactivate --all; echo -e "${GREEN}✔ 所有插件已禁用${NC}"; pause_prompt;;
             4) docker exec -u www-data "$container_name" wp cache flush; echo -e "${GREEN}✔ 缓存已刷新${NC}"; pause_prompt;;
             5) echo -e "${YELLOW}正在修复权限 (可能需要几秒)...${NC}"
+               # 需要 root 权限运行 chown
                docker compose -f "$sdir/docker-compose.yml" exec -T -u root wordpress chown -R www-data:www-data /var/www/html
                echo -e "${GREEN}✔ 权限已修复 (www-data)${NC}"; pause_prompt;;
             6) read -p "旧域名: " old_d; read -p "新域名: " new_d
@@ -436,7 +444,6 @@ function sys_monitor() {
         if command -v free >/dev/null; then echo -e "内存使用 : $(free -h|grep Mem|awk '{print $3 "/" $2}')"; fi
         echo -e "磁盘占用 : $(df -h /|awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
         echo -e "运行时间 : $(uptime -p)"
-        # [改进] 兼容 ss
         if command -v netstat >/dev/null; then
              echo -e "TCP连接数: $(netstat -an|grep ESTABLISHED|wc -l)"
         else
@@ -448,22 +455,30 @@ function sys_monitor() {
         read -t 5 -p "> " o; [ "$o" == "0" ] && return
     done
 }
-
+# ================= 📜 容器日志查看器 =================
 function view_container_logs() {
     while true; do
         clear
         echo -e "${YELLOW}=== 🔍 容器日志查看器 ===${NC}"
         echo -e "用于找回初始密码、Token 或排查启动错误。"
         echo "--------------------------"
+        
+        # 列出站点
         ls -1 "$SITES_DIR"
         echo "--------------------------"
-        read -p "请输入要查看的域名 (0返回): " domain
+        echo "输入 0 返回上一级"
+        echo "--------------------------"
+        read -p "请输入要查看的域名: " domain
+        
         if [ "$domain" == "0" ]; then return; fi
         
         sdir="$SITES_DIR/$domain"
-        if [ ! -d "$sdir" ]; then echo -e "${RED}目录不存在${NC}"; sleep 1; continue; fi
+        if [ ! -d "$sdir" ]; then 
+            echo -e "${RED}目录不存在${NC}"; sleep 1; continue
+        fi
         
         cd "$sdir"
+        
         echo "--------------------------"
         echo " 1. 查看最后 50 行 (标准模式)"
         echo " 2. 实时追踪日志 (Ctrl+C 退出)"
@@ -472,14 +487,25 @@ function view_container_logs() {
         read -p "请选择日志模式 [1-3]: " log_opt
         
         case $log_opt in
-            1) echo -e "${YELLOW}>>> 正在获取日志...${NC}"; docker compose logs --tail=50; pause_prompt;;
-            2) echo -e "${YELLOW}>>> 进入实时模式 (按 Ctrl+C 退出)...${NC}"; sleep 1; docker compose logs -f --tail=20;;
-            3) echo -e "${YELLOW}>>> 正在搜索 Password, Token, Key, Admin...${NC}"
-               echo "------------------------------------------------"
-               docker compose logs | grep -iE "pass|token|key|secret|admin|user|generated"
-               echo "------------------------------------------------"
-               echo -e "如果上面是空的，说明日志里没打印密码，或者已被滚动清理。"
-               pause_prompt;;
+            1) 
+                echo -e "${YELLOW}>>> 正在获取日志...${NC}"
+                docker compose logs --tail=50
+                pause_prompt
+                ;;
+            2)
+                echo -e "${YELLOW}>>> 进入实时模式 (按 Ctrl+C 退出)...${NC}"
+                sleep 1
+                docker compose logs -f --tail=20
+                ;;
+            3)
+                echo -e "${YELLOW}>>> 正在搜索 Password, Token, Key, Admin...${NC}"
+                echo "------------------------------------------------"
+                # 使用 grep 搜索常见关键词，-i 忽略大小写，-E 支持多个词
+                docker compose logs | grep -iE "pass|token|key|secret|admin|user|generated"
+                echo "------------------------------------------------"
+                echo -e "如果上面是空的，说明日志里没打印密码，或者已被滚动清理。"
+                pause_prompt
+                ;;
             *) echo "无效选项"; sleep 1;;
         esac
     done
@@ -551,7 +577,9 @@ function component_manager() {
 }
 
 function fail2ban_manager() {
+    # 定义日志路径
     local nginx_log="$LOG_DIR/access.log"
+    
     while true; do
         clear
         echo -e "${YELLOW}=== 👮 Fail2Ban 严厉模式 (3次即封) ===${NC}"
@@ -564,53 +592,78 @@ function fail2ban_manager() {
         echo " 0. 返回"
         echo "--------------------------"
         read -p "请输入选项 [0-4]: " o
+        
         case $o in
             0) return;;
+            
             1)
                 echo -e "${YELLOW}>>> 正在配置 Fail2Ban (严厉模式)...${NC}"
+                
+                # 1. 检查日志
                 if [ ! -f "$nginx_log" ]; then
                     echo -e "${RED}未找到 Nginx 日志: $nginx_log${NC}"
                     echo -e "请先执行 [99] 重建网关以挂载日志。"
                     pause_prompt; continue
                 fi
-                if [ -f /etc/debian_version ]; then apt-get update && apt-get install -y fail2ban; ssh_log="/var/log/auth.log"
-                else yum install -y fail2ban; ssh_log="/var/log/secure"; fi
 
+                # 2. 安装
+                if [ -f /etc/debian_version ]; then 
+                    apt-get update && apt-get install -y fail2ban
+                    ssh_log="/var/log/auth.log"
+                else 
+                    yum install -y fail2ban
+                    ssh_log="/var/log/secure"
+                fi
+
+                # 3. 写入过滤规则
                 cat > /etc/fail2ban/filter.d/nginx-scan.conf <<EOF
 [Definition]
 failregex = ^<HOST> -.*"(GET|POST|HEAD).*" (404|444|403) .*$
 ignoreregex =
 EOF
+
+                # 4. 写入 Jail 配置 (核心修改点)
                 cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1/8 ::1
-bantime  = 86400
-findtime = 300
-maxretry = 3
+bantime  = 86400    ; 封禁 24小时
+findtime = 300      ; 5分钟内
+maxretry = 3        ; <--- 只需要3次错误就封禁！
 
 [sshd]
 enabled = true
 port    = ssh
 logpath = $ssh_log
 backend = systemd
-maxretry = 3
+maxretry = 3        ; SSH 输错3次密码也封
 
 [nginx-scan]
 enabled = true
 filter  = nginx-scan
 logpath = $nginx_log
 port    = http,https
-maxretry = 3
+maxretry = 3        ; 扫描/WAF 触发3次即封
 action  = iptables-allports[name=nginx-scan]
 EOF
+
+                # 5. 重启生效
                 systemctl enable fail2ban
                 systemctl restart fail2ban
-                echo -e "${GREEN}✔ 严厉策略已生效！${NC}"; pause_prompt;;
+                
+                echo -e "${GREEN}✔ 严厉策略已生效！${NC}"
+                echo -e "规则: 5分钟内错误 3 次 -> 封禁 24 小时"
+                pause_prompt
+                ;;
+                
             2)
                 echo -e "${CYAN}=== 监狱名单 ===${NC}"
-                echo -e "【SSH】"; fail2ban-client status sshd 2>/dev/null | grep "Banned IP list:"
-                echo -e "\n【Web扫描】"; fail2ban-client status nginx-scan 2>/dev/null | grep "Banned IP list:"
-                pause_prompt;;
+                echo -e "【SSH】"
+                fail2ban-client status sshd 2>/dev/null | grep "Banned IP list:"
+                echo -e "\n【Web扫描】"
+                fail2ban-client status nginx-scan 2>/dev/null | grep "Banned IP list:"
+                pause_prompt
+                ;;
+                
             3)
                 read -p "输入解封 IP: " ip
                 if [ ! -z "$ip" ]; then
@@ -618,7 +671,9 @@ EOF
                     fail2ban-client set nginx-scan unbanip $ip
                     echo "已解封"
                 fi
-                pause_prompt;;
+                pause_prompt
+                ;;
+            
             4) grep "Ban " /var/log/fail2ban.log | tail -n 20; pause_prompt;;
         esac
     done
@@ -636,9 +691,8 @@ function waf_manager() {
             0) return;; 
             1) 
                 echo -e "${BLUE}>>> 正在部署规则...${NC}"
-                # [改进] 增加 wp-config.php 拦截
                 cat >/tmp/w <<EOF
-# --- V69 Ultra WAF Rules ---
+# --- V9 Ultra WAF Rules ---
 location ~* /\.(git|svn|hg|env|bak|config|sql|db|key|pem|ssh|ftpconfig) { deny all; return 403; }
 location ~* \.(sql|bak|conf|ini|log|sh|yaml|yml|swp|install|dist)$ { deny all; return 403; }
 location ~* wp-config\.php$ { deny all; return 403; }
@@ -688,12 +742,15 @@ function port_manager() {
 }
 
 function traffic_manager() { 
+    # 依赖检查
     if [ ! -f "$FW_DIR/access.conf" ]; then touch "$FW_DIR/access.conf"; fi
     if [ ! -f "$FW_DIR/geo.conf" ]; then touch "$FW_DIR/geo.conf"; fi
     if [ ! -f "$FW_DIR/bots.conf" ]; then touch "$FW_DIR/bots.conf"; fi
 
+    # 内部函数：安全重载 Nginx
     function safe_reload() {
         echo -e "${YELLOW}>>> 正在测试 Nginx 配置...${NC}"
+        # 预检配置，防止写错导致网关挂掉
         if docker exec gateway_proxy nginx -t >/dev/null 2>&1; then
             docker exec gateway_proxy nginx -s reload
             echo -e "${GREEN}✔ 配置生效${NC}"
@@ -702,10 +759,17 @@ function traffic_manager() {
             echo -e "请检查刚才输入的规则是否正确，或尝试清空规则。"
         fi
     }
+
+    # 内部函数：校验 IP 格式
     function validate_ip() {
         local ip=$1
-        if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then return 0; else return 1; fi
+        if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
+            return 0
+        else
+            return 1
+        fi
     }
+
     while true; do 
         clear; echo -e "${YELLOW}=== 🌐 流量控制加强版 (Traffic ACL) ===${NC}"
         echo -e "当前规则数: IP[$(wc -l < "$FW_DIR/access.conf")] | 国家[$(wc -l < "$FW_DIR/geo.conf")]"
@@ -721,83 +785,212 @@ function traffic_manager() {
         echo " 0. 返回上一级"
         echo "--------------------------"
         read -p "请输入选项 [0-6]: " t
+        
         case $t in 
             0) return;; 
-            1) echo -e "1. 黑名单 (Deny) 2. 白名单 (Allow)"; read -p "请选择 [1/2]: " type; if [ "$type" == "1" ]; then rule="deny"; else rule="allow"; fi; read -p "请输入 IP 或网段: " ip; if validate_ip "$ip"; then if grep -q "$ip;" "$FW_DIR/access.conf"; then echo -e "${YELLOW}已存在${NC}"; else echo "$rule $ip;" >> "$FW_DIR/access.conf"; safe_reload; fi; else echo -e "${RED}IP 格式错误${NC}"; fi; pause_prompt;; 
-            2) echo -e "${CYAN}=== 当前 IP 规则列表 ===${NC}"; cat -n "$FW_DIR/access.conf"; pause_prompt;;
-            3) if [ ! -s "$FW_DIR/access.conf" ]; then echo "列表为空"; pause_prompt; continue; fi; cat -n "$FW_DIR/access.conf"; read -p "输入要删除的 IP: " del_ip; if [ ! -z "$del_ip" ]; then sed -i "/$del_ip;/d" "$FW_DIR/access.conf"; safe_reload; fi; pause_prompt;;
-            4) read -p "请输入国家代码 (如 cn, ru, us): " c; c=$(echo "$c" | tr '[:upper:]' '[:lower:]'); echo -e "${YELLOW}>>> 下载 $c IP 数据...${NC}"; if curl -sL "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" -o /tmp/ip_list.txt; then if [ -s /tmp/ip_list.txt ] && ! grep -q "DOCTYPE" /tmp/ip_list.txt; then while read line; do echo "deny $line;" >> "$FW_DIR/geo.conf"; done < /tmp/ip_list.txt; rm /tmp/ip_list.txt; safe_reload; else echo -e "${RED}无效代码${NC}"; fi; else echo -e "${RED}下载失败${NC}"; fi; pause_prompt;; 
-            5) read -p "是否开启爬虫拦截? (y/n): " bot_confirm; if [ "$bot_confirm" == "y" ]; then cat > "$FW_DIR/bots.conf" <<EOF
+            
+            1) 
+                echo -e "1. 黑名单 (Deny) - 禁止访问"
+                echo -e "2. 白名单 (Allow) - 允许访问 (需配合 deny all 使用)"
+                read -p "请选择类型 [1/2]: " type
+                if [ "$type" == "1" ]; then rule="deny"; else rule="allow"; fi
+                
+                read -p "请输入 IP 或网段 (如 1.2.3.4 或 1.2.3.0/24): " ip
+                if validate_ip "$ip"; then
+                    if grep -q "$ip;" "$FW_DIR/access.conf"; then
+                        echo -e "${YELLOW}该 IP 已存在于列表中${NC}"
+                    else
+                        echo "$rule $ip;" >> "$FW_DIR/access.conf"
+                        safe_reload
+                    fi
+                else
+                    echo -e "${RED}❌ IP 格式错误！${NC}"
+                fi
+                pause_prompt;; 
+            
+            2) 
+                echo -e "${CYAN}=== 当前 IP 规则列表 ===${NC}"
+                if [ -s "$FW_DIR/access.conf" ]; then
+                    cat -n "$FW_DIR/access.conf"
+                else
+                    echo "列表为空"
+                fi
+                echo "--------------------------"
+                pause_prompt;;
+
+            3) 
+                echo -e "${CYAN}=== 删除规则 ===${NC}"
+                if [ ! -s "$FW_DIR/access.conf" ]; then echo "列表为空"; pause_prompt; continue; fi
+                cat -n "$FW_DIR/access.conf"
+                echo "--------------------------"
+                read -p "请输入要删除的 IP (输入内容): " del_ip
+                if [ ! -z "$del_ip" ]; then
+                    sed -i "/$del_ip;/d" "$FW_DIR/access.conf"
+                    echo -e "${GREEN}已删除包含 $del_ip 的规则${NC}"
+                    safe_reload
+                fi
+                pause_prompt;;
+
+            4) 
+                read -p "请输入国家代码 (如 cn, ru, us): " c
+                c=$(echo "$c" | tr '[:upper:]' '[:lower:]')
+                echo -e "${YELLOW}>>> 正在下载 $c IP 段数据...${NC}"
+                
+                if curl -sL "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" -o /tmp/ip_list.txt; then
+                    if [ -s /tmp/ip_list.txt ] && ! grep -q "DOCTYPE" /tmp/ip_list.txt; then
+                        while read line; do echo "deny $line;" >> "$FW_DIR/geo.conf"; done < /tmp/ip_list.txt
+                        rm /tmp/ip_list.txt
+                        safe_reload
+                    else
+                        echo -e "${RED}❌ 下载失败或国家代码无效${NC}"
+                    fi
+                else
+                    echo -e "${RED}❌ 网络连接失败${NC}"
+                fi
+                pause_prompt;; 
+            
+            5)
+                # [修复] 补全了这里的逻辑
+                echo -e "这将屏蔽常见扫描器: curl, wget, python, go-http, sqlmap 等。"
+                read -p "是否开启? (y=开启, n=关闭): " bot_confirm
+                if [ "$bot_confirm" == "y" ]; then
+                    # 1. 写入配置
+                    cat > "$FW_DIR/bots.conf" <<EOF
 if (\$http_user_agent ~* (Scrapy|Curl|HttpClient|Java|Wget|Python|Go-http-client|SQLMap|Nmap|Nikto|Havij)) { return 403; }
 EOF
-            echo -e "${GREEN}>>> 已启用${NC}"; safe_reload; else echo "" > "$FW_DIR/bots.conf"; echo -e "${YELLOW}>>> 已关闭${NC}"; safe_reload; fi; pause_prompt;; 
-            6) read -p "确定清空所有规则? (y/n): " confirm; if [ "$confirm" == "y" ]; then echo "" > "$FW_DIR/access.conf"; echo "" > "$FW_DIR/geo.conf"; echo "" > "$FW_DIR/bots.conf"; safe_reload; fi; pause_prompt;; 
+                    echo -e "${GREEN}>>> 已写入爬虫拦截规则${NC}"
+                    safe_reload
+                else
+                    # 2. 清空配置 (相当于关闭)
+                    echo "" > "$FW_DIR/bots.conf"
+                    echo -e "${YELLOW}>>> 已关闭爬虫拦截${NC}"
+                    safe_reload
+                fi
+                pause_prompt;; 
+
+            6) 
+                read -p "确定清空所有 IP、国家和爬虫规则吗? (y/n): " confirm
+                if [ "$confirm" == "y" ]; then
+                    echo "" > "$FW_DIR/access.conf"
+                    echo "" > "$FW_DIR/geo.conf"
+                    echo "" > "$FW_DIR/bots.conf"
+                    safe_reload
+                fi
+                pause_prompt;; 
         esac
     done 
 }
 
 # ================= 🆕 动态云端应用商店 =================
+
+# 仓库基础配置 (请根据实际情况修改 URL)
+# 确保这是 raw 文件的访问地址前缀
 REPO_ROOT="https://raw.githubusercontent.com/lje02/wp-manager/main"
 
 function install_remote_app() {
     local app_key=$1
     local app_name=$2
+    
     echo "-----------------------------------------"
     echo -e "正在准备安装: ${GREEN}$app_name${NC}"
     read -p "请输入域名 (例如 $app_key.example.com): " domain
     if [ -z "$domain" ]; then echo -e "${RED}域名不能为空${NC}"; return; fi
 
+    # 1. 冲突检测与目录创建
     pname=$(echo $domain | tr '.' '_')
     if ! check_container_conflict "$pname"; then pause_prompt; return; fi
-    sdir="$SITES_DIR/$domain"
     
+       sdir="$SITES_DIR/$domain"
+    
+    # [修改点] 智能目录检查 ===========================
     if [ -d "$sdir" ]; then
         echo -e "${RED}⚠️  检测到目录已存在: $sdir${NC}"
+        echo -e "${YELLOW}这通常意味着之前安装过，或者卸载不彻底。${NC}"
         read -p "是否删除旧目录并强制重装? (y/n): " confirm_del
+        
         if [ "$confirm_del" == "y" ]; then
+            echo -e "${YELLOW}>>> 正在清理旧文件...${NC}"
+            # 先尝试停止可能存在的容器（双重保险）
             cd "$sdir" 2>/dev/null && docker compose down >/dev/null 2>&1
+            # 删除目录
             rm -rf "$sdir"
             echo -e "${GREEN}✔ 旧目录已清理${NC}"
         else
             echo "❌ 操作已取消"; pause_prompt; return
         fi
     fi
+    # ===============================================
+    
     mkdir -p "$sdir"
 
+
+    # 2. 下载模板 (路径规则：apps/key/template.yml)
     template_url="$REPO_ROOT/apps/$app_key/template.yml"
     target_file="$sdir/docker-compose.yml"
     
     echo -e "${YELLOW}>>> 正在下载配置模板...${NC}"
     if ! curl -f -sL "$template_url" -o "$target_file"; then
-        echo -e "${RED}❌ 下载失败！请求地址: $template_url${NC}"
-        rm -rf "$sdir"; pause_prompt; return
+        echo -e "${RED}❌ 下载失败！${NC}"
+        echo "请求地址: $template_url"
+        rm -rf "$sdir"
+        pause_prompt; return
     fi
 
+    # 3. 渲染模板
     echo -e "${YELLOW}>>> 正在配置参数...${NC}"
     email="admin@localhost.com"
     sed -i "s|{{DOMAIN}}|$domain|g" "$target_file"
     sed -i "s|{{EMAIL}}|$email|g" "$target_file"
     sed -i "s|{{APP_NAME}}|$pname|g" "$target_file"
 
+    # 4. 启动
     cd "$sdir" && docker compose up -d
     write_log "Installed Cloud App ($app_key) on $domain"
     echo -e "${GREEN}✔ $app_name 部署成功！${NC}"
     check_ssl_status "$domain"
 
+    echo -e "${YELLOW}------------------------------------------------${NC}"
+    echo -e "正在尝试从日志中自动抓取初始密码/Token..."
+    echo -e "${YELLOW}------------------------------------------------${NC}"
+    
+    # [改进] 等待5秒让容器初始化，然后尝试抓取日志
     sleep 5
+    # 获取当前目录下 docker-compose.yml 里的第一个服务名对应的容器ID
+    # 这样不管容器叫什么名字都能找到
     cid=$(docker compose ps -q | head -n 1)
+    
     if [ ! -z "$cid" ]; then
+        # 搜索常见密码关键词
         logs=$(docker logs $cid 2>&1 | grep -iE "pass|token|key|secret|admin|user|generated" | tail -n 5)
-        if [ ! -z "$logs" ]; then echo -e "${GREEN}🔍 发现凭证信息：${NC}\n$logs"; else echo -e "${CYAN}ℹ️  未自动发现密码，请手动查看日志。${NC}"; fi
+        if [ ! -z "$logs" ]; then
+             echo -e "${GREEN}🔍 发现可能的凭证信息：${NC}"
+             echo "$logs"
+        else
+             echo -e "${CYAN}ℹ️  未在日志最后5行发现明显密码。${NC}"
+             echo -e "可能是默认密码 (admin/admin)，或需要手动执行命令。"
+             echo -e "你可以使用菜单 [34] -> [3] 深度搜索日志。"
+        fi
+        echo -e "${YELLOW}------------------------------------------------${NC}"
+        echo -e "容器ID: ${CYAN}${cid:0:12}${NC}"
+    else
+        echo -e "${RED}⚠️ 无法获取容器ID，请手动检查。${NC}"
     fi
+    
     pause_prompt
 }
-
 function traffic_stats() {
+    # 检查日志是否存在
     local log_file="$LOG_DIR/access.log"
-    if [ ! -f "$log_file" ]; then echo -e "${RED}❌ 未找到日志文件: $log_file${NC}"; echo -e "${YELLOW}请先执行 '99. 重建网关' 以挂载日志目录。${NC}"; pause_prompt; return; fi
+    if [ ! -f "$log_file" ]; then
+        echo -e "${RED}❌ 未找到日志文件: $log_file${NC}"
+        echo -e "${YELLOW}提示: 如果你是刚更新脚本，请先执行 '99. 重建网关' (你需要手动添加这个选项或重启网关) 以挂载日志目录。${NC}"
+        pause_prompt
+        return
+    fi
+
     while true; do
-        clear; echo -e "${YELLOW}=== 📈 站点访问流量统计 ===${NC}"
+        clear
+        echo -e "${YELLOW}=== 📈 站点访问流量统计 ===${NC}"
         echo -e "日志大小: $(du -h $log_file | awk '{print $1}')"
         echo "--------------------------"
         echo " 1. 实时可视化面板 (GoAccess CLI)"
@@ -810,113 +1003,256 @@ function traffic_stats() {
         read -p "请输入选项 [0-5]: " s
         case $s in
             0) return;;
-            1) echo -e "${GREEN}>>> 启动 GoAccess...${NC}"; docker run --rm -it -v "$LOG_DIR":/srv/logs xavierh/goaccess-for-nginxproxymanager goaccess /srv/logs/access.log --log-format=COMBINED --real-time-html=false;;
-            2) echo -e "${GREEN}>>> 生成 Report...${NC}"; docker run --rm -v "$LOG_DIR":/srv/logs xavierh/goaccess-for-nginxproxymanager goaccess /srv/logs/access.log --log-format=COMBINED -o /srv/logs/report.html; echo -e "✅ 已生成: ${CYAN}$LOG_DIR/report.html${NC}"; pause_prompt;;
-            3) awk '{print $1}' "$log_file" | sort | uniq -c | sort -rn | head -n 10; pause_prompt;;
-            4) awk -F\" '{print $2}' "$log_file" | awk '{print $2}' | sort | uniq -c | sort -rn | head -n 10; pause_prompt;;
-            5) read -p "确认清空? (y/n): " c; if [ "$c" == "y" ]; then echo "" > "$log_file"; echo "已清空"; fi; pause_prompt;;
+            1)
+                echo -e "${GREEN}>>> 正在启动 GoAccess 面板...${NC}"
+                echo -e "(操作提示: 按 F1 查看帮助, q 退出)"
+                sleep 2
+                # 使用 Docker 运行 GoAccess，无需在宿主机安装
+                docker run --rm -it -v "$LOG_DIR":/srv/logs xavierh/goaccess-for-nginxproxymanager goaccess /srv/logs/access.log --log-format=COMBINED --real-time-html=false
+                ;;
+            2)
+                echo -e "${GREEN}>>> 正在生成 Report...${NC}"
+                docker run --rm -v "$LOG_DIR":/srv/logs xavierh/goaccess-for-nginxproxymanager goaccess /srv/logs/access.log --log-format=COMBINED -o /srv/logs/report.html
+                echo -e "✅ 报表已生成: ${CYAN}$LOG_DIR/report.html${NC}"
+                echo -e "你可以通过 FTP/SFTP 下载该文件，或临时移动到网站目录查看。"
+                pause_prompt
+                ;;
+            3)
+                echo -e "\n${CYAN}--- Top 10 访问 IP ---${NC}"
+                awk '{print $1}' "$log_file" | sort | uniq -c | sort -rn | head -n 10
+                pause_prompt
+                ;;
+            4)
+                echo -e "\n${CYAN}--- Top 10 访问 URL ---${NC}"
+                awk -F\" '{print $2}' "$log_file" | awk '{print $2}' | sort | uniq -c | sort -rn | head -n 10
+                pause_prompt
+                ;;
+            5)
+                echo -e "${YELLOW}确定要清空访问日志吗？(y/n)${NC}"
+                read -p "> " c
+                if [ "$c" == "y" ]; then
+                    echo "" > "$log_file"
+                    echo "已清空。"
+                fi
+                pause_prompt
+                ;;
         esac
     done
 }
-
+# --- 5. 系统清理模块 ---
 function system_cleanup() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🧹 系统垃圾清理大师 ===${NC}"
+        clear
+        echo -e "${YELLOW}=== 🧹 系统垃圾清理大师 ===${NC}"
         echo -e "当前磁盘使用率: $(df -h / | awk 'NR==2 {print $5}')"
         echo "--------------------------"
-        echo " 1. Docker 瘦身 (删除未使用的镜像/缓存)"
-        echo " 2. 扫描并清理 孤儿证书"
-        echo " 3. 强制刷新 网关配置"
+        echo " 1. Docker 深度瘦身 (删除未使用的镜像/缓存)"
+        echo " 2. 扫描并清理 孤儿证书 (已删站点的残留SSL)"
+        echo " 3. 强制刷新 网关配置 (Nginx Reload)"
         echo " 0. 返回"
         echo "--------------------------"
         read -p "请选择 [0-3]: " c
         case $c in
             0) return;;
-            1) echo -e "${YELLOW}>>> 正在执行 Docker 清理...${NC}"
-               # [优化] 去掉 -a 参数，保留已拉取的镜像，只删除 dangling
-               docker system prune -f
-               echo -e "${GREEN}✔ 清理完成！${NC}"; pause_prompt;;
-            2) echo -e "${YELLOW}>>> 扫描孤儿证书...${NC}"
-               certs=$(docker exec gateway_acme ls /etc/nginx/certs 2>/dev/null | grep "\.crt$" | sed 's/\.crt//g')
-               if [ -z "$certs" ]; then echo "未找到证书"; pause_prompt; continue; fi
-               for domain in $certs; do
-                   if [ "$domain" == "default" ]; then continue; fi
-                   if [ ! -d "$SITES_DIR/$domain" ]; then
-                       echo -e "${RED}发现残留证书: $domain${NC}"
-                       read -p "  └─ 确认删除? (y/n): " del
-                       if [ "$del" == "y" ]; then
-                           docker exec gateway_acme rm -f "/etc/nginx/certs/$domain.crt" "/etc/nginx/certs/$domain.key"
-                           echo -e "     ${GREEN}✔ 已删除${NC}"
-                       fi
-                   fi
-               done
-               pause_prompt;;
-            3) docker exec gateway_proxy nginx -s reload; echo -e "${GREEN}✔ 网关刷新成功${NC}"; pause_prompt;;
+            
+            1) 
+                echo -e "${YELLOW}>>> 正在执行 Docker 深度清理...${NC}"
+                echo -e "这将删除所有停止的容器、无用的网络和**未被使用的镜像**。"
+                read -p "确认执行? (y/n): " confirm
+                if [ "$confirm" == "y" ]; then
+                    docker system prune -a -f
+                    echo -e "${GREEN}✔ 清理完成！空间已释放。${NC}"
+                else
+                    echo "已取消"
+                fi
+                pause_prompt
+                ;;
+                
+            2)
+                echo -e "${YELLOW}>>> 正在扫描孤儿证书...${NC}"
+                # 逻辑：遍历 certs 容器内的证书，对比 SITES_DIR 目录
+                # 如果证书存在，但 sites 目录下没有对应文件夹，视为垃圾
+                
+                # 1. 获取所有证书文件名 (去除后缀)
+                certs=$(docker exec gateway_acme ls /etc/nginx/certs 2>/dev/null | grep "\.crt$" | sed 's/\.crt//g')
+                
+                if [ -z "$certs" ]; then
+                    echo "未找到任何证书。"; pause_prompt; continue
+                fi
+
+                count=0
+                found_orphan=0
+                
+                for domain in $certs; do
+                    # 忽略 default 证书
+                    if [ "$domain" == "default" ]; then continue; fi
+                    
+                    # 检查是否存在对应的站点目录
+                    if [ ! -d "$SITES_DIR/$domain" ]; then
+                        echo -e "${RED}发现残留证书: $domain${NC}"
+                        read -p "  └─ 确认删除该证书? (y/n): " del
+                        if [ "$del" == "y" ]; then
+                            docker exec gateway_acme rm -f "/etc/nginx/certs/$domain.crt" "/etc/nginx/certs/$domain.key" "/etc/nginx/certs/$domain.chain.pem" "/etc/nginx/certs/$domain.dhparam.pem" 2>/dev/null
+                            echo -e "     ${GREEN}✔ 已删除${NC}"
+                            ((count++))
+                        fi
+                        found_orphan=1
+                    fi
+                done
+                
+                if [ "$found_orphan" -eq 0 ]; then
+                    echo -e "${GREEN}✔ 太棒了，你的系统很干净，没有残留证书。${NC}"
+                else
+                    echo -e "共清理了 $count 个残留域名证书。"
+                fi
+                pause_prompt
+                ;;
+                
+            3)
+                echo -e "${YELLOW}>>> 正在重载 Nginx 网关...${NC}"
+                if docker exec gateway_proxy nginx -s reload; then
+                    echo -e "${GREEN}✔ 网关刷新成功${NC}"
+                else
+                    echo -e "${RED}❌ 刷新失败，请检查网关容器状态${NC}"
+                fi
+                pause_prompt
+                ;;
         esac
     done
 }
 
 function app_store() {
-    if ! command -v jq >/dev/null 2>&1; then echo -e "${RED}错误: 未安装 jq 组件${NC}"; pause_prompt; return; fi
+    # 依赖检查：我们需要 jq 来解析 JSON
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${RED}错误: 未安装 jq 组件，请先运行脚本依赖检查。${NC}"
+        pause_prompt; return
+    fi
+
     local list_file="/tmp/wp_apps_list.json"
     local list_url="$REPO_ROOT/apps.json"
 
     while true; do
-        clear; echo -e "${YELLOW}=== ☁️ 动态应用商店 (Dynamic Store) ===${NC}"
-        if ! curl -sL "$list_url" -o "$list_file"; then echo -e "${RED}❌ 获取列表失败${NC}"; pause_prompt; return; fi
-        if ! jq -e . "$list_file" >/dev/null 2>&1; then echo -e "${RED}❌ 数据格式错误${NC}"; pause_prompt; return; fi
+        clear
+        echo -e "${YELLOW}=== ☁️ 动态应用商店 (Dynamic Store) ===${NC}"
+        echo -e "正在从云端获取最新应用列表..."
+        
+        # 1. 下载应用列表 JSON
+        if ! curl -sL "$list_url" -o "$list_file"; then
+            echo -e "${RED}❌ 获取列表失败，请检查网络或仓库地址。${NC}"
+            pause_prompt; return
+        fi
+
+        # 检查 JSON 是否合法
+        if ! jq -e . "$list_file" >/dev/null 2>&1; then
+             echo -e "${RED}❌ 获取的数据格式错误。${NC}"
+             pause_prompt; return
+        fi
 
         echo "-----------------------------------------"
+        
+        # 2. 使用 jq 动态生成菜单
+        # 逻辑：读取数组，输出 "序号. 名称 (描述)"
         jq -r 'to_entries[] | " \(.key + 1). " + .value.name + " \t- " + .value.description' "$list_file"
+        
         echo " 0. 返回上一级"
         echo "-----------------------------------------"
+        
         read -p "请选择应用编号: " idx
+        
         if [ "$idx" == "0" ]; then return; fi
+        
+        # 校验输入是否为数字
         if ! [[ "$idx" =~ ^[0-9]+$ ]]; then continue; fi
 
+        # 3. 根据序号提取 Key 和 Name
+        # 数组下标 = 序号 - 1
         array_index=$((idx - 1))
+        
+        # 使用 jq 提取对应下标的数据
         selected_key=$(jq -r ".[$array_index].key // empty" "$list_file")
         selected_name=$(jq -r ".[$array_index].name // empty" "$list_file")
 
-        if [ -z "$selected_key" ]; then echo -e "${RED}无效的选择${NC}"; sleep 1; else install_remote_app "$selected_key" "$selected_name"; fi
+        if [ -z "$selected_key" ] || [ "$selected_key" == "null" ]; then
+            echo -e "${RED}无效的选择${NC}"
+            sleep 1
+        else
+            # 调用安装函数
+            install_remote_app "$selected_key" "$selected_name"
+        fi
     done
 }
-
+# ================= 🔄 通用更新模块 =================
 function app_update_manager() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🆙 应用/站点更新中心 ===${NC}"
-        echo -e "原理: 拉取 Docker 最新镜像并重建容器"
-        ls -1 "$SITES_DIR"; echo "--------------------------"
-        read -p "请输入要更新的域名 (0返回): " domain
+        clear
+        echo -e "${YELLOW}=== 🆙 应用/站点更新中心 ===${NC}"
+        echo -e "原理: 拉取 Docker 最新镜像并重建容器 (Image Pull & Recreate)"
+        echo -e "适用: 所有通过本脚本安装的应用 (Portainer, Alist, WP等)"
+        echo "--------------------------"
+        
+        # 列出所有站点
+        ls -1 "$SITES_DIR"
+        
+        echo "--------------------------"
+        echo "输入 0 返回上一级"
+        echo "--------------------------"
+        read -p "请输入要更新的域名: " domain
+        
         if [ "$domain" == "0" ]; then return; fi
+        
         sdir="$SITES_DIR/$domain"
-        if [ ! -d "$sdir" ]; then echo -e "${RED}❌ 目录不存在${NC}"; sleep 1; continue; fi
+        if [ ! -d "$sdir" ]; then 
+            echo -e "${RED}❌ 目录不存在: $sdir${NC}"
+            sleep 1
+            continue
+        fi
         
         echo -e "${YELLOW}>>> 正在更新 $domain ...${NC}"
         cd "$sdir"
-        docker compose pull
+        
+        # 1. 拉取最新镜像
+        echo -e "${CYAN}[1/3] 正在拉取最新镜像 (docker compose pull)...${NC}"
+        if ! docker compose pull; then
+            echo -e "${RED}❌ 拉取失败，请检查网络或镜像名。${NC}"
+            pause_prompt
+            continue
+        fi
+        
+        # 2. 重建容器
+        echo -e "${CYAN}[2/3] 正在重建容器 (docker compose up -d)...${NC}"
         docker compose up -d
+        
+        # 3. 清理旧镜像 (可选，释放磁盘空间)
+        echo -e "${CYAN}[3/3] 清理无用的旧镜像...${NC}"
         docker image prune -f
+        
         write_log "Updated app/site: $domain"
-        echo -e "${GREEN}✔ 更新成功！${NC}"; pause_prompt
+        echo -e "${GREEN}✔ 更新成功！${NC}"
+        pause_prompt
     done
 }
 
 # --- 基础操作函数 ---
 function init_gateway() { 
     local m=$1
+    # 1. 确保网络和目录
     if ! docker network ls | grep -q proxy-net; then docker network create proxy-net >/dev/null; fi
     mkdir -p "$GATEWAY_DIR" "$LOG_DIR" "$FW_DIR"
-    # 确保文件存在
+    
+    # 2. 初始化空配置文件，防止挂载报错
     touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf" "$FW_DIR/bots.conf"
 
     cd "$GATEWAY_DIR"
+    
+    # 3. Nginx 优化配置
     echo "client_max_body_size 1024m;" > upload_size.conf
     echo "proxy_read_timeout 600s;" >> upload_size.conf
     echo "proxy_send_timeout 600s;" >> upload_size.conf
     
+    # 4. 生成 Docker Compose (集成有安全功能)
     cat > docker-compose.yml <<EOF
 services:
+  # [安全盾牌] Socket 代理：隔离 Docker API 风险
   socket-proxy:
     image: tecnativa/docker-socket-proxy
     container_name: gateway_socket_proxy
@@ -927,10 +1263,11 @@ services:
       - CONTAINERS=1
       - NETWORKS=1
       - INFO=1
-      - POST=0
+      - POST=0  # 禁止修改
     networks:
       - "proxy-net"
 
+  # [核心网关] Nginx
   nginx-proxy:
     image: nginxproxy/nginx-proxy
     container_name: gateway_proxy
@@ -945,9 +1282,14 @@ services:
       - vhost:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - certs:/etc/nginx/certs:ro
+      
+      # === 防火墙挂载区 ===
       - ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro
       - ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro
+      # [新增] bots.conf
       - ../firewall/bots.conf:/etc/nginx/conf.d/z_bots.conf:ro
+      # ==================
+      
       - ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro
       - ../logs:/var/log/nginx
     environment: 
@@ -959,6 +1301,7 @@ services:
       - socket-proxy
     restart: always
 
+  # [证书伴侣] ACME
   acme-companion:
     image: nginxproxy/acme-companion
     container_name: gateway_acme
@@ -981,6 +1324,7 @@ services:
       - "socket-proxy"
     restart: always
 
+  # [自动更新] Watchtower
   watchtower:
     image: containrrr/watchtower
     container_name: gateway_watchtower
@@ -990,16 +1334,26 @@ services:
     environment:
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_SCHEDULE=0 0 4 * * *
+      - WATCHTOWER_INCLUDE_STOPPED=true
     networks:
       - "proxy-net"
 
-volumes: {conf: , vhost: , html: , certs: , acme: }
-networks: {proxy-net: {external: true}}
+volumes: 
+  conf: 
+  vhost: 
+  html: 
+  certs: 
+  acme: 
+
+networks: 
+  proxy-net: 
+    external: true
 EOF
 
+    # 5. 启动
     local cmd=${DOCKER_COMPOSE_CMD:-"docker compose"}
     if $cmd up -d --remove-orphans >/dev/null 2>&1; then 
-        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关重建完成${NC}"
+        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关重建完成 (已挂载爬虫拦截规则)${NC}"
     else 
         echo -e "${RED}✘ 网关启动失败${NC}"
         [ "$m" == "force" ] && $cmd up -d
@@ -1009,12 +1363,9 @@ EOF
 function create_site() {
     read -p "1. 域名: " fd; host_ip=$(curl -s4 ifconfig.me); if command -v dig >/dev/null; then dip=$(dig +short $fd|head -1); else dip=$(getent hosts $fd|awk '{print $1}'); fi; if [ ! -z "$dip" ] && [ "$dip" != "$host_ip" ]; then echo -e "${RED}IP不符${NC}"; read -p "继续? (y/n): " f; [ "$f" != "y" ] && return; fi
     read -p "2. 邮箱: " email; read -p "3. DB密码: " db_pass
-    # [修复] 修正 MySQL8.0 -> mysql:8.0
-    echo -e "${YELLOW}自定义版本? (默:PHP8.2/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust; pt="php8.2-fpm-alpine"; di="mysql:8.0"; rt="7.0-alpine"
+    echo -e "${YELLOW}自定义版本? (默:PHP8.3/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust; pt="php8.3-fpm-alpine"; di="mysql:8.0"; rt="7.0-alpine"
     if [ "$cust" == "y" ]; then echo "PHP: 1.7.4 2.8.0 3.8.1 4.8.2 5.8.3 6.最新"; read -p "选: " p; case $p in 1) pt="php7.4-fpm-alpine";; 2) pt="php8.0-fpm-alpine";; 3) pt="php8.1-fpm-alpine";; 4) pt="php8.2-fpm-alpine";; 5) pt="php8.3-fpm-alpine";; 6) pt="fpm-alpine";; esac; echo "DB: 1.M5.7 2.M8.0 3.最新 4.Ma10.6 5.最新"; read -p "选: " d; case $d in 1) di="mysql:5.7";; 2) di="mysql:8.0";; 3) di="mysql:latest";; 4) di="mariadb:10.6";; 5) di="mariadb:latest";; esac; echo "Redis: 1.6.2 2.7.0 3.最新"; read -p "选: " r; case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; esac; fi
     pname=$(echo $fd|tr '.' '_'); sdir="$SITES_DIR/$fd"; [ -d "$sdir" ] && echo -e "已存在" && pause_prompt && return; mkdir -p "$sdir"
-    
-    # [优化] waf.conf 增加 wp-config.php 保护
     cat > "$sdir/waf.conf" <<EOF
 location ~* /\.(git|env|sql) { deny all; return 403; }
 location ~* wp-config\.php$ { deny all; return 403; }
@@ -1029,6 +1380,7 @@ upload_max_filesize = 512M
 post_max_size = 512M
 max_execution_time = 600
 EOF
+ # [V8改进] 添加 logging 配置
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
   db: {image: $di, container_name: ${pname}_db, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, environment: {MYSQL_ROOT_PASSWORD: $db_pass, MYSQL_DATABASE: wordpress, MYSQL_USER: wp_user, MYSQL_PASSWORD: $db_pass}, volumes: [db_data:/var/lib/mysql], networks: [default]}
@@ -1037,17 +1389,17 @@ services:
     image: redis:$rt
     container_name: ${pname}_redis
     restart: always
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes  # <--- [新增] 开启 AOF 持久化
     logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
     volumes: 
-      - redis_data:/data
+      - redis_data:/data  # <--- [新增] 挂载数据卷
     networks: [default]
 
   wordpress: {image: wordpress:$pt, container_name: ${pname}_app, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, depends_on: [db, redis], environment: {WORDPRESS_DB_HOST: db, WORDPRESS_DB_USER: wp_user, WORDPRESS_DB_PASSWORD: $db_pass, WORDPRESS_DB_NAME: wordpress, WORDPRESS_CONFIG_EXTRA: "define('WP_REDIS_HOST','redis');define('WP_REDIS_PORT',6379);define('WP_HOME','https://'.\$\$_SERVER['HTTP_HOST']);define('WP_SITEURL','https://'.\$\$_SERVER['HTTP_HOST']);if(isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'])&&strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'],'https')!==false){\$\$_SERVER['HTTPS']='on';}"}, volumes: [wp_data:/var/www/html, ./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini], networks: [default]}
   
   nginx: {image: nginx:alpine, container_name: ${pname}_nginx, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [wp_data:/var/www/html, ./nginx.conf:/etc/nginx/conf.d/default.conf, ./waf.conf:/etc/nginx/waf.conf], environment: {VIRTUAL_HOST: "$fd", LETSENCRYPT_HOST: "$fd", LETSENCRYPT_EMAIL: "$email"}, networks: [default, proxy-net]}
 
-volumes: {db_data: , wp_data: , redis_data: }
+volumes: {db_data: , wp_data: , redis_data: } # <--- [新增] redis_data 定义
 networks: {proxy-net: {external: true}}
 EOF
 $DOCKER_COMPOSE_CMD
@@ -1082,31 +1434,81 @@ function create_redirect() { read -p "Src Domain: " s; read -p "Target URL: " t;
 function delete_site() { while true; do clear; echo "=== 🗑️ 删除网站 ==="; ls -1 "$SITES_DIR"; echo "----------------"; read -p "域名(0返回): " d; [ "$d" == "0" ] && return; if [ -d "$SITES_DIR/$d" ]; then read -p "确认? (y/n): " c; [ "$c" == "y" ] && cd "$SITES_DIR/$d" && docker compose down -v >/dev/null 2>&1 && cd .. && rm -rf "$SITES_DIR/$d" && echo "Deleted"; write_log "Deleted site $d"; fi; pause_prompt; done; }
 
 function list_sites() {
-    clear; echo -e "${YELLOW}=== 📂 站点列表与状态 ===${NC}"; printf "${CYAN}%-3s %-25s %-12s %-20s${NC}\n" "No." "域名 (Domain)" "状态" "备注 (Remark)"; echo "---------------------------------------------------------------"
-    local i=1; for dir in "$SITES_DIR"/*; do
+    clear
+    echo -e "${YELLOW}=== 📂 站点列表与状态 ===${NC}"
+    # 表头格式化
+    printf "${CYAN}%-3s %-25s %-12s %-20s${NC}\n" "No." "域名 (Domain)" "状态" "备注 (Remark)"
+    echo "---------------------------------------------------------------"
+    
+    local i=1
+    # 遍历站点目录
+    for dir in "$SITES_DIR"/*; do
         if [ -d "$dir" ]; then
-            domain=$(basename "$dir"); remark=$(grep "^$domain|" "$REMARK_FILE" | cut -d'|' -f2); if [ -z "$remark" ]; then remark="-"; fi
-            cd "$dir"; if docker compose ps | grep -q "Up"; then status="${GREEN}● 运行中${NC}"; else status="${RED}● 已停止${NC}"; fi
-            printf "%-3s %-25s %-12b %-20s\n" "$i" "$domain" "$status" "$remark"; ((i++))
+            domain=$(basename "$dir")
+            
+            # 1. 获取备注
+            remark=$(grep "^$domain|" "$REMARK_FILE" | cut -d'|' -f2)
+            if [ -z "$remark" ]; then remark="-"; fi
+
+            # 2. 获取容器状态 (简单的检查是否有Up状态的容器)
+            cd "$dir"
+            if docker compose ps | grep -q "Up"; then
+                status="${GREEN}● 运行中${NC}"
+            else
+                status="${RED}● 已停止${NC}"
+            fi
+
+            # 3. 输出表格行
+            printf "%-3s %-25s %-12b %-20s\n" "$i" "$domain" "$status" "$remark"
+            ((i++))
         fi
     done
-    echo "---------------------------------------------------------------"; echo -e "提示: 使用菜单 [18] 可修改站点备注"; pause_prompt
+    echo "---------------------------------------------------------------"
+    echo -e "提示: 使用菜单 [18] 可修改站点备注"
+    pause_prompt
 }
 
 function manage_remarks() {
     while true; do
-        clear; echo -e "${YELLOW}=== 📝 站点备注管理 ===${NC}"; local i=1; declare -A domain_map
-        for dir in "$SITES_DIR"/*; do if [ -d "$dir" ]; then d=$(basename "$dir"); r=$(grep "^$d|" "$REMARK_FILE" | cut -d'|' -f2); echo -e " $i. $d \t [${CYAN}${r:-无}${NC}]"; domain_map[$i]=$d; ((i++)); fi; done
-        echo " 0. 返回"; echo "--------------------------"; read -p "请选择: " idx; if [ "$idx" == "0" ]; then return; fi
-        target_domain=${domain_map[$idx]}; if [ -z "$target_domain" ]; then echo "无效选择"; sleep 1; continue; fi
-        echo -e "当前站点: ${GREEN}$target_domain${NC}"; read -p "请输入新备注: " new_remark
-        if [ ! -z "$new_remark" ]; then sed -i "/^$target_domain|/d" "$REMARK_FILE"; echo "$target_domain|$new_remark" >> "$REMARK_FILE"; echo -e "${GREEN}✔ 备注已更新${NC}"; fi; sleep 1
+        clear
+        echo -e "${YELLOW}=== 📝 站点备注管理 ===${NC}"
+        # 显示简易列表
+        local i=1
+        declare -A domain_map
+        for dir in "$SITES_DIR"/*; do
+            if [ -d "$dir" ]; then
+                d=$(basename "$dir")
+                r=$(grep "^$d|" "$REMARK_FILE" | cut -d'|' -f2)
+                echo -e " $i. $d \t [${CYAN}${r:-无}${NC}]"
+                domain_map[$i]=$d
+                ((i++))
+            fi
+        done
+        echo " 0. 返回"
+        echo "--------------------------"
+        read -p "请选择要修改备注的站点编号: " idx
+        
+        if [ "$idx" == "0" ]; then return; fi
+        
+        target_domain=${domain_map[$idx]}
+        if [ -z "$target_domain" ]; then echo "无效选择"; sleep 1; continue; fi
+        
+        echo -e "当前站点: ${GREEN}$target_domain${NC}"
+        read -p "请输入新备注 (例如: 个人博客 / 图床): " new_remark
+        
+        # 写入逻辑: 先删除旧的，再追加新的
+        if [ ! -z "$new_remark" ]; then
+            sed -i "/^$target_domain|/d" "$REMARK_FILE"
+            echo "$target_domain|$new_remark" >> "$REMARK_FILE"
+            echo -e "${GREEN}✔ 备注已更新${NC}"
+        fi
+        sleep 1
     done
 }
 
 function cert_management() { while true; do clear; echo "1.列表 2.上传 3.重置 4.续签 0.返回"; read -p "选: " c; case $c in 0) return;; 1) docker exec gateway_proxy ls -lh /etc/nginx/certs|grep .crt; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "crt: " c; read -p "key: " k; docker cp "$c" gateway_acme:"/etc/nginx/certs/$d.crt"; docker cp "$k" gateway_acme:"/etc/nginx/certs/$d.key"; docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 3) read -p "域名: " d; docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key"; docker restart gateway_acme; echo "OK"; pause_prompt;; 4) docker exec gateway_acme /app/force_renew; echo "OK"; pause_prompt;; esac; done; }
 
-function db_manager() { while true; do clear; echo "1.导出 2.导入 0.返回"; read -p "选: " c; case $c in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; pwd=$(grep "MYSQL_ROOT_PASSWORD" "$s/docker-compose.yml" | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'"); docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$s/${d}.sql"; echo "OK: $s/${d}.sql";; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "SQL File: " f; s="$SITES_DIR/$d"; pwd=$(grep "MYSQL_ROOT_PASSWORD" "$s/docker-compose.yml" | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'"); cat "$f" | docker compose -f "$s/docker-compose.yml" exec -T db mysql -u root -p"$pwd"; echo "OK";; esac; pause_prompt; done; }
+function db_manager() { while true; do clear; echo "1.导出 2.导入 0.返回"; read -p "选: " c; case $c in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$s/${d}.sql"; echo "OK: $s/${d}.sql";; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "SQL File: " f; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); cat "$f" | docker compose -f "$s/docker-compose.yml" exec -T db mysql -u root -p"$pwd"; echo "OK";; esac; pause_prompt; done; }
 
 function change_domain() { ls -1 "$SITES_DIR"; read -p "旧域名: " o; [ ! -d "$SITES_DIR/$o" ] && return; read -p "新域名: " n; cd "$SITES_DIR/$o" && docker compose down; cd .. && mv "$o" "$n" && cd "$n"; sed -i "s/$o/$n/g" docker-compose.yml; docker compose up -d; wp_c=$(docker compose ps -q wordpress); docker run --rm --volumes-from $wp_c --network container:$wp_c wordpress:cli wp search-replace "$o" "$n" --all-tables --skip-columns=guid; docker exec gateway_proxy nginx -s reload; echo "OK"; write_log "Changed $o to $n"; pause_prompt; }
 
@@ -1119,12 +1521,18 @@ EOF
 cd "$s" && docker compose restart nginx; echo "OK";; esac; pause_prompt; done; }
 
 # === 核心逻辑：执行单个站点备份 ===
+# 参数: $1 = 域名
 function perform_backup_logic() {
     local site_domain=$1
     local s_path="$SITES_DIR/$site_domain"
     
-    if [ ! -d "$s_path" ]; then echo "跳过: $site_domain (目录不存在)"; return; fi
+    if [ ! -d "$s_path" ]; then
+        echo "跳过: $site_domain (目录不存在)"
+        return
+    fi
+    
     check_rclone
+    # 检查云端配置
     local has_remote=0
     if rclone listremotes 2>/dev/null | grep -q "remote:"; then has_remote=1; fi
 
@@ -1135,13 +1543,15 @@ function perform_backup_logic() {
     echo -e "${CYAN}>>> [Backup] 正在备份: $site_domain${NC}"
     mkdir -p "$temp_dir"
 
+    # 1. 复制配置文件 (所有应用适用)
     cp "$s_path/docker-compose.yml" "$temp_dir/" 2>/dev/null
     cp "$s_path/"*.conf "$temp_dir/" 2>/dev/null
     cp "$s_path/"*.ini "$temp_dir/" 2>/dev/null
+    # 兼容应用商店的数据目录
     if [ -d "$s_path/data" ]; then cp -r "$s_path/data" "$temp_dir/"; fi
 
+    # 2. 智能数据库导出 (MySQL/MariaDB)
     if [ -f "$s_path/docker-compose.yml" ]; then
-        # [优化] 增加非空判断，避免 grep 失败导致备份无效
         pwd=$(grep "MYSQL_ROOT_PASSWORD" "$s_path/docker-compose.yml" | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
         if [ ! -z "$pwd" ]; then
             db_container=$(docker compose -f "$s_path/docker-compose.yml" ps -q db 2>/dev/null)
@@ -1152,28 +1562,34 @@ function perform_backup_logic() {
         fi
     fi
 
+    # 3. 智能数据卷提取 (针对 WP 的 wp-content)
     app_container=$(docker compose -f "$s_path/docker-compose.yml" ps -q wordpress 2>/dev/null)
     if [ ! -z "$app_container" ]; then
         echo " - 提取 Docker 数据卷 (wp-content)..."
         docker run --rm --volumes-from "$app_container" -v "$temp_dir":/backup alpine tar czf /backup/wp_content.tar.gz -C /var/www/html wp-content 2>/dev/null
     fi
 
+    # 4. 打包与存储
     echo " - 生成压缩包..."
     cd /tmp && tar czf "$archive_name" "$b_name"
+    
     local local_backup_dir="$BASE_DIR/backups"
     mkdir -p "$local_backup_dir"
     mv "/tmp/$archive_name" "$local_backup_dir/"
     echo -e "${GREEN}✔ 本地备份保存至: $local_backup_dir/$archive_name${NC}"
 
+    # 5. 云端上传
     if [ "$has_remote" -eq 1 ]; then
         echo -e "${YELLOW} - 正在上传至云端 (remote:wp_backups/)...${NC}"
         rclone copy "$local_backup_dir/$archive_name" "remote:wp_backups/"
     fi
+    
     rm -rf "$temp_dir"
     write_log "Backup completed for $site_domain"
 }
 
 # === 核心逻辑：执行还原 ===
+# 参数: $1 = 备份文件路径, $2 = 目标域名
 function perform_restore_logic() {
     local backup_file=$1
     local target_domain=$2
@@ -1182,31 +1598,33 @@ function perform_restore_logic() {
     if [ ! -f "$backup_file" ]; then echo "错误: 文件不存在 $backup_file"; return; fi
 
     echo -e "${YELLOW}>>> [Restore] 正在还原到: $target_domain${NC}"
-    echo -e "${RED}⚠️  注意: 旧目录将移动到 /tmp 以策安全。${NC}"
+    echo -e "${RED}⚠️  警告: 目标目录将被清空并覆盖！${NC}"
     
     # 1. 解压备份
     local tar_dir=$(tar tf "$backup_file" | head -1 | cut -f1 -d"/")
     tar xzf "$backup_file" -C /tmp
     local restore_path="/tmp/$tar_dir"
 
-    # 2. [安全优化] 备份旧环境而不是直接删除
+    # 2. 清理旧环境
     if [ -d "$target_dir" ]; then
-        echo " - 停止并移走旧容器..."
+        echo " - 停止旧容器..."
         cd "$target_dir" && docker compose down >/dev/null 2>&1
-        local ts=$(date +%s)
-        mv "$target_dir" "/tmp/${target_domain}_bak_${ts}"
-        echo -e "${YELLOW}   (旧目录已备份至 /tmp/${target_domain}_bak_${ts})${NC}"
+        rm -rf "$target_dir"
     fi
     mkdir -p "$target_dir"
 
+    # 3. 恢复配置文件
     echo " - 恢复配置文件..."
     cp -r "$restore_path"/* "$target_dir/" 2>/dev/null
     
+    # 4. 启动容器 (初始化环境)
     echo " - 启动容器..."
     cd "$target_dir" && docker compose up -d
 
+    # 5. 恢复 WordPress 数据卷 (如果有)
     if [ -f "$target_dir/wp_content.tar.gz" ]; then
         echo " - 恢复 Docker 数据卷 (wp-content)..."
+        # 等待容器卷初始化
         sleep 5
         app_c=$(docker compose ps -q wordpress)
         if [ ! -z "$app_c" ]; then
@@ -1215,19 +1633,18 @@ function perform_restore_logic() {
         rm "$target_dir/wp_content.tar.gz"
     fi
 
+    # 6. 导入数据库 (如果有)
     if [ -f "$target_dir/db.sql" ]; then
         echo " - 等待数据库启动 (约15秒)..."
+        # 简单等待或循环检测
         for i in {1..30}; do
             if docker compose exec -T db mysqladmin ping -h localhost --silent >/dev/null 2>&1; then break; fi
-            echo -n "."; sleep 1
+            echo -n "."
+            sleep 1
         done
         echo -e "\n - 导入数据库..."
-        pwd=$(grep "MYSQL_ROOT_PASSWORD" docker-compose.yml | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
-        if [ ! -z "$pwd" ]; then
-             docker compose exec -T db mysql -u root -p"$pwd" < "db.sql"
-        else
-             echo -e "${RED}❌ 无法获取数据库密码，跳过导入${NC}"
-        fi
+        pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
+        docker compose exec -T db mysql -u root -p"$pwd" < "db.sql"
     fi
 
     rm -rf "$restore_path"
@@ -1251,30 +1668,61 @@ function backup_restore_ops() {
         echo " 0. 返回上一级"
         echo "--------------------------"
         read -p "请输入选项 [0-4]: " b
+        
         case $b in 
             0) return;; 
+            
             3) configure_rclone; has_remote=1;;
-            4) (crontab -l 2>/dev/null | grep -v "wp-backup-daily"; echo "0 2 * * * /usr/bin/wp backup_all >> $LOG_DIR/backup.log 2>&1 #wp-backup-daily") | crontab -; echo -e "${GREEN}✔ 已添加定时任务 (02:00)${NC}"; pause_prompt;;
-            1) ls -1 "$SITES_DIR"; echo "----------------"; read -p "输入域名 (输入 all 备份全部): " d; if [ "$d" == "all" ]; then for dir in "$SITES_DIR"/*; do [ -d "$dir" ] && perform_backup_logic "$(basename "$dir")"; done; else perform_backup_logic "$d"; fi; pause_prompt;; 
-            2) echo -e "${YELLOW}=== 还原向导 ===${NC}"; echo "1. 从本地文件还原"; echo "2. 从云端下载并还原"; read -p "选择源 [1/2]: " src
-               local backup_file=""
-               if [ "$src" == "2" ]; then
-                   if [ "$has_remote" -eq 0 ]; then echo "未配置云端"; pause_prompt; continue; fi
-                   rclone lsl "remote:wp_backups" | tail -n 10
-                   read -p "输入要下载的文件名: " fname
-                   echo "下载中..."
-                   rclone copy "remote:wp_backups/$fname" "/tmp/"
-                   backup_file="/tmp/$fname"
-               else
-                   ls -lh "$BASE_DIR/backups" 2>/dev/null
-                   read -p "输入本地文件全路径: " backup_file
-               fi
-               if [ -f "$backup_file" ]; then
-                   read -p "请输入要还原到的目标域名: " target_domain
-                   read -p "确认还原? (yes/no): " confirm
-                   if [ "$confirm" == "yes" ]; then perform_restore_logic "$backup_file" "$target_domain"; fi
-               else echo "文件未找到"; fi
-               [ "$src" == "2" ] && rm -f "$backup_file"; pause_prompt;;
+
+            4) 
+                # 添加定时任务: 每天凌晨 02:00
+                (crontab -l 2>/dev/null | grep -v "wp-backup-daily"; echo "0 2 * * * /usr/bin/wp backup_all >> $LOG_DIR/backup.log 2>&1 #wp-backup-daily") | crontab -
+                echo -e "${GREEN}✔ 已添加定时任务 (02:00)${NC}"
+                pause_prompt
+                ;;
+
+            1) 
+                ls -1 "$SITES_DIR"; echo "----------------"
+                read -p "输入域名 (输入 all 备份全部): " d
+                if [ "$d" == "all" ]; then
+                    for dir in "$SITES_DIR"/*; do [ -d "$dir" ] && perform_backup_logic "$(basename "$dir")"; done
+                else
+                    perform_backup_logic "$d"
+                fi
+                pause_prompt
+                ;;
+            
+            2) 
+                echo -e "${YELLOW}=== 还原向导 ===${NC}"
+                echo "1. 从本地文件还原"
+                echo "2. 从云端下载并还原"
+                read -p "选择源 [1/2]: " src
+                
+                local backup_file=""
+                if [ "$src" == "2" ]; then
+                    if [ "$has_remote" -eq 0 ]; then echo "未配置云端"; pause_prompt; continue; fi
+                    rclone lsl "remote:wp_backups" | tail -n 10
+                    read -p "输入要下载的文件名: " fname
+                    echo "下载中..."
+                    rclone copy "remote:wp_backups/$fname" "/tmp/"
+                    backup_file="/tmp/$fname"
+                else
+                    ls -lh "$BASE_DIR/backups" 2>/dev/null
+                    read -p "输入本地文件全路径: " backup_file
+                fi
+
+                if [ -f "$backup_file" ]; then
+                    read -p "请输入要还原到的目标域名: " target_domain
+                    read -p "确认还原? (yes/no): " confirm
+                    if [ "$confirm" == "yes" ]; then
+                        perform_restore_logic "$backup_file" "$target_domain"
+                    fi
+                else
+                    echo "文件未找到"
+                fi
+                [ "$src" == "2" ] && rm -f "$backup_file"
+                pause_prompt
+                ;;
         esac
     done 
 }
@@ -1283,30 +1731,80 @@ function rebuild_gateway_action() {
     clear
     echo -e "${RED}⚠️  危险操作：重建核心网关${NC}"
     echo "----------------------------------------"
-    echo -e "此操作将会：1. 停止并删除 Nginx 网关容器  2. 重新生成配置文件  3. 重新拉起服务"
+    echo -e "此操作将会："
+    echo -e "1. 停止并删除当前的 Nginx 网关容器"
+    echo -e "2. 重新生成 docker-compose.yml 配置文件"
+    echo -e "3. 重新拉起网关服务"
     echo -e "${YELLOW}适用场景：开启日志分析功能、修复网关报错、更新网关配置。${NC}"
     echo "----------------------------------------"
     read -p "确认执行吗? (输入 yes 确认): " confirm
-    if [ "$confirm" == "yes" ]; then echo -e "${GREEN}>>> 开始重建网关...${NC}"; init_gateway "force"; pause_prompt; else echo "操作已取消"; sleep 1; fi
+    
+    if [ "$confirm" == "yes" ]; then
+        echo -e "${GREEN}>>> 开始重建网关...${NC}"
+        # 调用 init_gateway 函数，传入 "force" 参数强制重建
+        init_gateway "force"
+        pause_prompt
+    else
+        echo "操作已取消"
+        sleep 1
+    fi
 }
 
 function uninstall_cluster() {
-    clear; echo -e "${RED}⚠️  高危操作：卸载脚本及所有数据${NC}"; echo -e "此操作将执行以下清理："; echo -e " 1. 停止并删除所有 Docker 容器 (站点 + 网关)"; echo -e " 2. 删除所有数据文件 ($BASE_DIR)"; echo -e " 3. 删除快捷指令 (/usr/bin/wp)"; echo "------------------------------------------------"; echo -e "${YELLOW}请输入 DELETE 确认卸载，输入其他内容取消。${NC}"; read -p "> " c
+    clear
+    echo -e "${RED}⚠️  高危操作：卸载脚本及所有数据${NC}"
+    echo -e "此操作将执行以下清理："
+    echo -e " 1. 停止并删除所有 Docker 容器 (站点 + 网关)"
+    echo -e " 2. 删除所有数据文件 ($BASE_DIR)"
+    echo -e " 3. 删除快捷指令 (/usr/bin/wp)"
+    echo "------------------------------------------------"
+    echo -e "${YELLOW}请输入 DELETE 确认卸载，输入其他内容取消。${NC}"
+    read -p "> " c
+    
     if [ "$c" == "DELETE" ]; then
         echo -e "${YELLOW}>>> 正在停止容器并清理数据...${NC}"
-        if [ -d "$SITES_DIR" ]; then ls "$SITES_DIR" | while read d; do s_path="$SITES_DIR/$d"; if [ -d "$s_path" ]; then cd "$s_path" && docker compose down -v >/dev/null 2>&1; fi; done; fi
-        if [ -d "$GATEWAY_DIR" ]; then cd "$GATEWAY_DIR" && docker compose down -v >/dev/null 2>&1; fi
+        
+        # 1. 尝试停止所有站点
+        if [ -d "$SITES_DIR" ]; then
+            ls "$SITES_DIR" | while read d; do 
+                s_path="$SITES_DIR/$d"
+                if [ -d "$s_path" ]; then
+                    cd "$s_path" && docker compose down -v >/dev/null 2>&1
+                fi
+            done
+        fi
+
+        # 2. 停止网关
+        if [ -d "$GATEWAY_DIR" ]; then
+            cd "$GATEWAY_DIR" && docker compose down -v >/dev/null 2>&1
+        fi
+
+        # 3. 清理网络和文件
         docker network rm proxy-net >/dev/null 2>&1
-        rm -rf "$BASE_DIR"; rm -f /usr/bin/wp
-        echo -e "${GREEN}✔ 已彻底卸载。${NC}"; exit 0
-    else echo "❌ 操作已取消"; sleep 1; fi
+        rm -rf "$BASE_DIR"
+        rm -f /usr/bin/wp
+        
+        echo -e "${GREEN}✔ 已彻底卸载。江湖路远，有缘再见！${NC}"
+        
+        # 核心修复：直接结束脚本进程
+        exit 0
+    else
+        echo "❌ 操作已取消"
+        sleep 1
+    fi
 }
 
 function system_optimizer() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🚀 系统性能调优箱 ===${NC}"
-        swap_total=$(free -m | grep Swap | awk '{print $2}'); if [ "$swap_total" -eq 0 ]; then swap_status="${RED}未开启${NC}"; else swap_status="${GREEN}已开启 (${swap_total}MB)${NC}"; fi
+        clear
+        echo -e "${YELLOW}=== 🚀 系统性能调优箱 ===${NC}"
+        # 检查 Swap 状态
+        swap_total=$(free -m | grep Swap | awk '{print $2}')
+        if [ "$swap_total" -eq 0 ]; then swap_status="${RED}未开启${NC}"; else swap_status="${GREEN}已开启 (${swap_total}MB)${NC}"; fi
+        
+        # 检查 BBR 状态
         if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then bbr_status="${GREEN}已开启${NC}"; else bbr_status="${YELLOW}未开启${NC}"; fi
+
         echo -e "当前 Swap: $swap_status | BBR: $bbr_status"
         echo "------------------------------------------------"
         echo " 1. 开启/设置 虚拟内存 (Swap) - 防止内存不足崩溃"
@@ -1315,26 +1813,103 @@ function system_optimizer() {
         echo " 0. 返回"
         echo "------------------------------------------------"
         read -p "请选择 [0-3]: " o
+        
         case $o in
             0) return;;
-            1) echo -e "${YELLOW}>>> 设置 Swap 虚拟内存${NC}"; echo "1. 1024MB (推荐 1G 内存机器)"; echo "2. 2048MB (推荐 2G+ 内存机器)"; echo "3. 关闭 Swap"; read -p "请选择大小: " s
-               if [ "$s" == "3" ]; then swapoff -a; rm -f /swapfile; sed -i '/\/swapfile/d' /etc/fstab; echo -e "${GREEN}✔ Swap 已关闭${NC}"
-               else [ "$s" == "1" ] && sz="1G" || sz="2G"; echo "正在创建 /swapfile (大小: $sz)..."; fallocate -l $sz /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$([ "$sz" == "1G" ] && echo 1024 || echo 2048); chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile; if ! grep -q "/swapfile" /etc/fstab; then echo "/swapfile none swap sw 0 0" >> /etc/fstab; fi; echo -e "${GREEN}✔ Swap 设置成功!${NC}"; fi; pause_prompt;;
-            2) echo -e "${YELLOW}>>> 开启 BBR 加速${NC}"; if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf; then echo "配置已存在..."; else echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf; echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf; fi; sysctl -p; if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then echo -e "${GREEN}✔ BBR 启动成功${NC}"; else echo -e "${RED}❌ 启动失败，可能内核版本太低${NC}"; fi; pause_prompt;;
-            3) check_dependencies; echo -e "${YELLOW}>>> 正在安装 Speedtest CLI...${NC}"; docker run --rm --net=host gists/speedtest-cli; pause_prompt;;
+            
+            1)
+                echo -e "${YELLOW}>>> 设置 Swap 虚拟内存${NC}"
+                echo "1. 1024MB (推荐 1G 内存机器)"
+                echo "2. 2048MB (推荐 2G+ 内存机器)"
+                echo "3. 关闭 Swap"
+                read -p "请选择大小: " s
+                if [ "$s" == "3" ]; then
+                    swapoff -a
+                    rm -f /swapfile
+                    sed -i '/\/swapfile/d' /etc/fstab
+                    echo -e "${GREEN}✔ Swap 已关闭${NC}"
+                else
+                    [ "$s" == "1" ] && sz="1G" || sz="2G"
+                    echo "正在创建 /swapfile (大小: $sz)..."
+                    fallocate -l $sz /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$([ "$sz" == "1G" ] && echo 1024 || echo 2048)
+                    chmod 600 /swapfile
+                    mkswap /swapfile
+                    swapon /swapfile
+                    if ! grep -q "/swapfile" /etc/fstab; then echo "/swapfile none swap sw 0 0" >> /etc/fstab; fi
+                    echo -e "${GREEN}✔ Swap 设置成功!${NC}"
+                fi
+                pause_prompt;;
+                
+            2)
+                echo -e "${YELLOW}>>> 开启 BBR 加速${NC}"
+                if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf; then
+                    echo "配置已存在，尝试重载..."
+                else
+                    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+                    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+                fi
+                sysctl -p
+                if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then echo -e "${GREEN}✔ BBR 启动成功${NC}"; else echo -e "${RED}❌ 启动失败，可能内核版本太低${NC}"; fi
+                pause_prompt;;
+                
+            3)
+                check_dependencies
+                echo -e "${YELLOW}>>> 正在安装 Speedtest CLI...${NC}"
+                # 使用 Docker 运行测速，免去安装依赖
+                docker run --rm --net=host gists/speedtest-cli
+                pause_prompt;;
         esac
     done
 }
 
 function db_admin_tool() {
-    clear; echo -e "${YELLOW}=== 🛢️ 数据库应急管理 (Adminer) ===${NC}"
-    echo -e "功能: 启动一个临时的 Web 管理面板来管理所有数据库。"; echo -e "注意: 使用完毕后请务必【销毁】，以保安全。"; echo "------------------------------------------------"
-    if docker ps | grep -q "temp_adminer"; then status="${GREEN}运行中${NC}"; port=$(docker port temp_adminer 8080 | awk -F: '{print $2}'); echo -e "状态: $status"; echo -e "地址: ${CYAN}http://$(curl -s4 ifconfig.me):$port${NC}"; else echo -e "状态: ${RED}未启动${NC}"; fi
-    echo "------------------------------------------------"; echo " 1. 启动 Adminer (随机端口)"; echo " 2. 销毁 Adminer (安全退出)"; echo " 0. 返回"; echo "------------------------------------------------"; read -p "请选择: " o
+    clear
+    echo -e "${YELLOW}=== 🛢️ 数据库应急管理 (Adminer) ===${NC}"
+    echo -e "功能: 启动一个临时的 Web 管理面板来管理所有数据库。"
+    echo -e "注意: 使用完毕后请务必【销毁】，以保安全。"
+    echo "------------------------------------------------"
+    
+    # 检查是否已运行
+    if docker ps | grep -q "temp_adminer"; then
+        status="${GREEN}运行中${NC}"
+        port=$(docker port temp_adminer 8080 | awk -F: '{print $2}')
+        echo -e "状态: $status"
+        echo -e "地址: ${CYAN}http://$(curl -s4 ifconfig.me):$port${NC}"
+    else
+        echo -e "状态: ${RED}未启动${NC}"
+    fi
+    echo "------------------------------------------------"
+    echo " 1. 启动 Adminer (随机端口)"
+    echo " 2. 销毁 Adminer (安全退出)"
+    echo " 0. 返回"
+    echo "------------------------------------------------"
+    read -p "请选择: " o
+    
     case $o in
         0) return;;
-        1) echo "正在启动..."; rand_port=$(shuf -i 10000-60000 -n 1); docker run -d --name temp_adminer -p $rand_port:8080 --network proxy-net --restart no adminer >/dev/null 2>&1; docker network connect default temp_adminer >/dev/null 2>&1; echo -e "${GREEN}✔ 启动成功!${NC}"; echo -e "访问地址: http://$(curl -s4 ifconfig.me):$rand_port"; echo -e "系统类型选 MySQL，服务器地址填写容器名 (如 ${CYAN}blog_db${NC} 或 ${CYAN}halo_db${NC})"; pause_prompt;;
-        2) docker rm -f temp_adminer >/dev/null 2>&1; echo -e "${GREEN}✔ 已销毁，安全无忧。${NC}"; pause_prompt;;
+        1)
+            echo "正在启动..."
+            # 随机生成一个 10000-60000 的端口
+            rand_port=$(shuf -i 10000-60000 -n 1)
+            # 关键：连接到 proxy-net 和 default 网络，这样它能访问所有的数据库容器
+            docker run -d --name temp_adminer \
+                -p $rand_port:8080 \
+                --network proxy-net \
+                --restart no \
+                adminer >/dev/null 2>&1
+            
+            # 再连接到 default 网络 (如果你的数据库在 default)
+            docker network connect default temp_adminer >/dev/null 2>&1
+            
+            echo -e "${GREEN}✔ 启动成功!${NC}"
+            echo -e "访问地址: http://$(curl -s4 ifconfig.me):$rand_port"
+            echo -e "系统类型选 MySQL，服务器地址填写容器名 (如 ${CYAN}blog_db${NC} 或 ${CYAN}halo_db${NC})"
+            pause_prompt;;
+            
+        2)
+            docker rm -f temp_adminer >/dev/null 2>&1
+            echo -e "${GREEN}✔ 已销毁，安全无忧。${NC}"
+            pause_prompt;;
     esac
 }
 
@@ -1343,25 +1918,37 @@ function show_menu() {
     clear
     echo -e "${GREEN}=== Docker 智能部署系统 ($VERSION) ===${NC}"
     echo "----------------------------------------------------------------"
+    
+    # --- 1. 部署中心 ---
     echo -e "${YELLOW}[🚀 部署中心]${NC}"
     echo -e " 1. 部署 WordPress             2. 部署 反向代理"
     echo -e " 3. 部署 301 重定向            4. ${GREEN}应用商店 (App Store)${NC}"
+    
     echo "" 
+    
+    # --- 2. 运维管理 ---
     echo -e "${YELLOW}[🔧 运维管理]${NC}"
     echo -e " 10. 站点列表 (含备注)         11. 容器状态监控"
     echo -e " 12. 删除指定站点              13. 更新应用/站点"
     echo -e " 14. 流量统计 (GoAccess)       15. 组件版本升降级"
     echo -e " 16. 更换网站域名              17. 系统清理 (证书/垃圾)"
     echo -e " 18. 管理站点备注              19. 系统优化 (Swap/BBR)"
+    
     echo ""
+    
+    # --- 3. 数据与工具 ---
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
     echo -e " 20. WP-CLI 瑞士军刀           21. 备份/还原 (云端)"
     echo -e " 22. 数据库管理 (Adminer)      23. 数据库 导入/导出 (CLI)"
+    
     echo ""
+
+    # --- 4. 安全与审计 ---
     echo -e "${YELLOW}[🛡️ 安全与审计]${NC}"
     echo -e " 30. 安全防御中心 (WAF)        31. Telegram 通知"
     echo -e " 32. 系统资源监控              33. 脚本操作日志"
     echo -e " 34. 容器日志 (找密码)         99. 重建核心网关"
+
     echo "----------------------------------------------------------------"
     echo -e "${BLUE} u. 更新脚本${NC} | ${RED}x. 卸载脚本${NC} | 0. 退出"
     echo -n "请选择: "
@@ -1369,10 +1956,18 @@ function show_menu() {
 }
 
 # ================= 5. 主程序循环 =================
+# === 命令行模式处理 (用于 Cron 自动备份) ===
 if [ "$1" == "backup_all" ]; then
-    check_rclone; echo "Starting Daily Backup: $(date)"
-    for dir in "$SITES_DIR"/*; do if [ -d "$dir" ]; then perform_backup_logic "$(basename "$dir")"; fi; done
-    echo "Daily Backup Finished: $(date)"; exit 0
+    # 仅在后台运行备份，不启动菜单
+    check_rclone
+    echo "Starting Daily Backup: $(date)"
+    for dir in "$SITES_DIR"/*; do 
+        if [ -d "$dir" ]; then
+             perform_backup_logic "$(basename "$dir")"
+        fi
+    done
+    echo "Daily Backup Finished: $(date)"
+    exit 0
 fi
 check_dependencies
 install_shortcut
@@ -1381,30 +1976,39 @@ if ! docker ps --format '{{.Names}}' | grep -q "^gateway_proxy$"; then echo "初
 while true; do 
     show_menu 
     case $option in 
+        # === 部署中心 ===
         1) create_site;; 
         2) create_proxy;; 
         3) create_redirect;; 
         4) app_store;;
+        
+        # === 运维管理 ===
         10) list_sites;; 
         11) container_ops;; 
         12) delete_site;; 
         13) app_update_manager;; 
         14) traffic_stats;; 
         15) component_manager;; 
-        16) change_domain;; 
+        16) change_domain;;      # 更换域名
         17) system_cleanup;; 
         18) manage_remarks;; 
         19) system_optimizer;;
+
+        # === 数据与工具 ===
         20) wp_toolbox;; 
-        21) backup_restore_ops;; 
-        22) db_admin_tool;; 
-        23) db_manager;; 
+        21) backup_restore_ops;; # 全站备份
+        22) db_admin_tool;;      # Adminer 网页管理
+        23) db_manager;;         # 命令行 SQL 导入导出
+
+        # === 安全与审计 ===
         30) security_center;; 
         31) telegram_manager;; 
         32) sys_monitor;; 
         33) log_manager;; 
         34) view_container_logs;; 
         99) rebuild_gateway_action;;
+
+        # === 系统操作 ===
         u|U) update_script;; 
         x|X) uninstall_cluster;; 
         0) exit 0;;
