@@ -68,5 +68,10 @@
     "key": "lsky-pro",
     "name": "Lsky Pro",
     "description": "兰空图床：高颜值、多存储策略的图片管理平台"
+  },
+  {
+    "key": "gitea",
+    "name": "Gitea",
+    "description": "极速、轻量的自建 Git 代码托管平台"
   }
 ]
