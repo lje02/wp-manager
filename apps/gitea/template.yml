@@ -1,0 +1,27 @@
+services:
+  gitea:
+    image: gitea/gitea:latest
+    container_name: {{APP_NAME}}_app
+    restart: always
+    environment:
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=3000
+      - USER_UID=1000
+      - USER_GID=1000
+    volumes:
+      - data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "2222:22" # SSH 访问端口
+    networks:
+      - proxy-net
+
+volumes:
+  data:
+
+networks:
+  proxy-net:
+    external: true
