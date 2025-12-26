@@ -1060,7 +1060,7 @@ function system_cleanup() {
                 echo -e "这将删除所有停止的容器、无用的网络和**未被使用的镜像**。"
                 read -p "确认执行? (y/n): " confirm
                 if [ "$confirm" == "y" ]; then
-                    docker system prune -a -f
+                    docker system prune -f
                     echo -e "${GREEN}✔ 清理完成！空间已释放。${NC}"
                 else
                     echo "已取消"
