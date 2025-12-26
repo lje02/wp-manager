@@ -1279,8 +1279,9 @@ function init_gateway() {
     
     # 4. 生成 Docker Compose (集成有安全功能)
     cat > docker-compose.yml <<EOF
+cat > docker-compose.yml <<EOF
 services:
-  # [安全盾牌] Socket 代理：隔离 Docker API 风险
+  # [安全盾牌] Socket 代理
   socket-proxy:
     image: tecnativa/docker-socket-proxy
     container_name: gateway_socket_proxy
@@ -1291,7 +1292,7 @@ services:
       - CONTAINERS=1
       - NETWORKS=1
       - INFO=1
-      - POST=0  # 禁止修改
+      - POST=0
     networks:
       - "proxy-net"
 
@@ -1310,14 +1311,9 @@ services:
       - vhost:/etc/nginx/vhost.d
       - html:/usr/share/nginx/html
       - certs:/etc/nginx/certs:ro
-      
-      # === 防火墙挂载区 ===
       - ../firewall/access.conf:/etc/nginx/conf.d/z_access.conf:ro
       - ../firewall/geo.conf:/etc/nginx/conf.d/z_geo.conf:ro
-      # [新增] bots.conf
       - ../firewall/bots.conf:/etc/nginx/conf.d/z_bots.conf:ro
-      # ==================
-      
       - ./upload_size.conf:/etc/nginx/conf.d/upload_size.conf:ro
       - ../logs:/var/log/nginx
     environment: 
@@ -1360,7 +1356,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-	  - DOCKER_API_VERSION=1.44
+      - DOCKER_API_VERSION=1.44
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_SCHEDULE=0 0 4 * * *
       - WATCHTOWER_INCLUDE_STOPPED=true
@@ -1378,6 +1374,18 @@ networks:
   proxy-net: 
     external: true
 EOF
+
+    # 5. 启动
+    local cmd=\${DOCKER_COMPOSE_CMD:-"docker compose"}
+    if \$cmd up -d --remove-orphans >/dev/null 2>&1; then 
+        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关重建完成${NC}"
+    else 
+        echo -e "${RED}✘ 网关启动失败 (YAML 格式错误)${NC}"
+        # 如果失败，打印日志方便排查
+        \$cmd config
+        [ "$m" == "force" ] && \$cmd up -d
+    fi 
+}
 
     # 5. 启动
     local cmd=${DOCKER_COMPOSE_CMD:-"docker compose"}
