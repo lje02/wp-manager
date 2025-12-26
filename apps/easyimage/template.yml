@@ -20,6 +20,7 @@ services:
 
 volumes:
   data:
+  data:
 
 networks:
   proxy-net:
