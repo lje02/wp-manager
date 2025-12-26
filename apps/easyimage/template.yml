@@ -1,6 +1,6 @@
 services:
   easyimage:
-    image: ddsderek/easyimage:latest
+    image: ghcr.io/lovebai/easyimage2.0-f:latest
     container_name: {{APP_NAME}}_app
     restart: unless-stopped
     environment:
