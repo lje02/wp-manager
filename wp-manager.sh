@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.33 (快捷方式: wp)"
+VERSION="V9.35 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -78,23 +78,53 @@ function configure_rclone() {
 }
 
 function check_dependencies() {
+    # 1. 检查 jq
     if ! command -v jq >/dev/null 2>&1; then
         echo -e "${YELLOW}>>> 正在安装依赖组件 (jq)...${NC}"
         if [ -f /etc/debian_version ]; then apt-get update && apt-get install -y jq; else yum install -y jq; fi
     fi
+    
+    # 2. 检查 openssl
     if ! command -v openssl >/dev/null 2>&1; then
         echo -e "${YELLOW}>>> 正在安装依赖组件 (openssl)...${NC}"
         if [ -f /etc/debian_version ]; then apt-get install -y openssl; else yum install -y openssl; fi
     fi
+    
+    # 3. 检查 net-tools
     if ! command -v netstat >/dev/null 2>&1; then
         echo -e "${YELLOW}>>> 正在安装网络工具 (net-tools)...${NC}"
         if [ -f /etc/debian_version ]; then apt-get install -y net-tools; else yum install -y net-tools; fi
     fi
-    if ! command -v docker >/dev/null 2>&1; then
-        echo -e "${YELLOW}>>> 正在安装 Docker...${NC}"
+
+    # 4. [修改] Docker 智能检测与安装
+    if command -v docker >/dev/null 2>&1; then
+        # --- 情况 A: Docker 已存在 ---
+        local d_ver=$(docker -v | awk '{print $3}' | tr -d ',')
+        echo -e "${GREEN}✔ 检测到 Docker 已安装 (版本: $d_ver)${NC}"
+        echo -e "${GREEN}  └─ 跳过 Docker 安装步骤${NC}"
+        
+        # 额外检查: 确保服务是启动的
+        if ! systemctl is-active docker >/dev/null 2>&1; then
+            echo -e "${YELLOW}  └─ 服务未运行，正在启动 Docker...${NC}"
+            systemctl start docker
+        fi
+    else
+        # --- 情况 B: Docker 不存在 ---
+        echo -e "${YELLOW}>>> 未检测到 Docker，正在自动安装...${NC}"
         curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
         systemctl enable docker && systemctl start docker
         write_log "Installed Docker"
+    fi
+
+    # 5. [新增] 检查 Docker Compose 插件是否可用
+    if ! docker compose version >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  检测到 Docker Compose 插件缺失 (你需要 V2 版本)${NC}"
+        echo -e "${YELLOW}>>> 正在补全 Docker Compose 插件...${NC}"
+        if [ -f /etc/debian_version ]; then 
+            apt-get update && apt-get install -y docker-compose-plugin
+        else 
+            yum install -y docker-compose-plugin
+        fi
     fi
 }
 # [补全] 容器冲突检测函数
@@ -1267,7 +1297,7 @@ services:
 
   # [核心网关] Nginx
   nginx-proxy:
-    image: nginxproxy/nginx-proxy:alpine
+    image: nginxproxy/nginx-proxy
     container_name: gateway_proxy
     ports: 
       - "80:80"
@@ -1330,6 +1360,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
+	  - DOCKER_API_VERSION=1.44
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_SCHEDULE=0 0 4 * * *
       - WATCHTOWER_INCLUDE_STOPPED=true
