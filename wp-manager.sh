@@ -1376,14 +1376,13 @@ networks:
 EOF
 
     # 5. 启动
-    local cmd=\${DOCKER_COMPOSE_CMD:-"docker compose"}
-    if \$cmd up -d --remove-orphans >/dev/null 2>&1; then 
+    local cmd=${DOCKER_COMPOSE_CMD:-"docker compose"}
+    if $cmd up -d --remove-orphans >/dev/null 2>&1; then 
         [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关重建完成${NC}"
     else 
-        echo -e "${RED}✘ 网关启动失败 (YAML 格式错误)${NC}"
-        # 如果失败，打印日志方便排查
-        \$cmd config
-        [ "$m" == "force" ] && \$cmd up -d
+        echo -e "${RED}✘ 网关启动失败${NC}"
+        $cmd config
+        [ "$m" == "force" ] && $cmd up -d
     fi 
 }
 
