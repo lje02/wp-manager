@@ -53,5 +53,10 @@
     "key": "memos",
     "name": "Memos",
     "description": "轻量级、隐私优先的碎片化笔记服务"
+  },
+  {
+    "key": "it-tools",
+    "name": "IT-Tools",
+    "description": "开发运维人员的在线实用工具集合"
   }
 ]
