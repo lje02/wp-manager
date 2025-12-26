@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.35 (快捷方式: wp)"
+VERSION="V9.35 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -48,12 +48,12 @@ function pause_prompt() {
     read -r
 }
 
-# [修改点] 快捷方式改为 wp
+# [修改点] 快捷方式改为 mmp
 function install_shortcut() {
     local script_path=$(readlink -f "$0")
-    if [ ! -L "/usr/bin/wp" ] || [ "$(readlink -f "/usr/bin/wp")" != "$script_path" ]; then
-        ln -sf "$script_path" /usr/bin/wp && chmod +x "$script_path"
-        echo -e "${GREEN}>>> 快捷指令 'wp' 已安装 (输入 wp 即可启动)${NC}"
+    if [ ! -L "/usr/bin/mmp" ] || [ "$(readlink -f "/usr/bin/mmp")" != "$script_path" ]; then
+        ln -sf "$script_path" /usr/bin/mmp && chmod +x "$script_path"
+        echo -e "${GREEN}>>> 快捷指令 'mmp' 已安装 (输入 mmp 即可启动)${NC}"
     fi
 }
 # === Rclone 依赖检查与配置 ===
@@ -1785,7 +1785,7 @@ function uninstall_cluster() {
     echo -e "此操作将执行以下清理："
     echo -e " 1. 停止并删除所有 Docker 容器 (站点 + 网关)"
     echo -e " 2. 删除所有数据文件 ($BASE_DIR)"
-    echo -e " 3. 删除快捷指令 (/usr/bin/wp)"
+    echo -e " 3. 删除快捷指令 (/usr/bin/mmp)"
     echo "------------------------------------------------"
     echo -e "${YELLOW}请输入 DELETE 确认卸载，输入其他内容取消。${NC}"
     read -p "> " c
@@ -1811,7 +1811,7 @@ function uninstall_cluster() {
         # 3. 清理网络和文件
         docker network rm proxy-net >/dev/null 2>&1
         rm -rf "$BASE_DIR"
-        rm -f /usr/bin/wp
+        rm -f /usr/bin/mmp
         
         echo -e "${GREEN}✔ 已彻底卸载。江湖路远，有缘再见！${NC}"
         
