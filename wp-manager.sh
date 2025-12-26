@@ -1279,7 +1279,6 @@ function init_gateway() {
     
     # 4. 生成 Docker Compose (集成有安全功能)
     cat > docker-compose.yml <<EOF
-cat > docker-compose.yml <<EOF
 services:
   # [安全盾牌] Socket 代理
   socket-proxy:
