@@ -2,7 +2,7 @@ services:
   easyimage:
     image: ddsderek/easyimage:latest
     container_name: {{APP_NAME}}_app
-    restart: always
+    restart: unless-stopped
     environment:
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
@@ -11,6 +11,7 @@ services:
       - TZ=Asia/Shanghai
       - PUID=1000
       - PGID=1000
+      - DEBUG=false
     volumes:
       - config:/app/web/config
       - images:/app/web/i
