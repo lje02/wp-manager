@@ -58,5 +58,15 @@
     "key": "it-tools",
     "name": "IT-Tools",
     "description": "开发运维人员的在线实用工具集合"
+  },
+  {
+    "key": "minio",
+    "name": "MinIO",
+    "description": "高性能、S3 兼容的自建对象存储服务"
+  },
+  {
+    "key": "lsky-pro",
+    "name": "Lsky Pro",
+    "description": "兰空图床：高颜值、多存储策略的图片管理平台"
   }
 ]
