@@ -1387,16 +1387,6 @@ EOF
     fi 
 }
 
-    # 5. 启动
-    local cmd=${DOCKER_COMPOSE_CMD:-"docker compose"}
-    if $cmd up -d --remove-orphans >/dev/null 2>&1; then 
-        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关重建完成 (已挂载爬虫拦截规则)${NC}"
-    else 
-        echo -e "${RED}✘ 网关启动失败${NC}"
-        [ "$m" == "force" ] && $cmd up -d
-    fi 
-}
-
 function create_site() {
     read -p "1. 域名: " fd; host_ip=$(curl -s4 ifconfig.me); if command -v dig >/dev/null; then dip=$(dig +short $fd|head -1); else dip=$(getent hosts $fd|awk '{print $1}'); fi; if [ ! -z "$dip" ] && [ "$dip" != "$host_ip" ]; then echo -e "${RED}IP不符${NC}"; read -p "继续? (y/n): " f; [ "$f" != "y" ] && return; fi
     read -p "2. 邮箱: " email; read -p "3. DB密码: " db_pass
