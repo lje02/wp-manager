@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.31 (快捷方式: wp)"
+VERSION="V9.33 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -1267,7 +1267,7 @@ services:
 
   # [核心网关] Nginx
   nginx-proxy:
-    image: nginxproxy/nginx-proxy:alpine  # <--- 指定 alpine 标签
+    image: nginxproxy/nginx-proxy:alpine
     container_name: gateway_proxy
     ports: 
       - "80:80"
