@@ -1,25 +1,25 @@
 services:
   easyimage:
-    image: ghcr.io/lovebai/easyimage2.0-f:latest
+    image: ddsderek/easyimage:latest
     container_name: {{APP_NAME}}_app
-    restart: unless-stopped
-    volumes:
-      - data:/app/web/config
-      - data:/app/web/i
+    restart: always
     environment:
-      - TZ=Asia/Shanghai
-      - PUID=1000
-      - PGID=1000
-      - DEBUG=false
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
       - LETSENCRYPT_EMAIL={{EMAIL}}
       - VIRTUAL_PORT=80
+      - TZ=Asia/Shanghai
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - config:/app/web/config
+      - images:/app/web/i
     networks:
       - proxy-net
 
 volumes:
-  data:
+  config:
+  images:
 
 networks:
   proxy-net:
