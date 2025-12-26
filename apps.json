@@ -48,5 +48,10 @@
     "key": "sun-panel",
     "name": "Sun-Pane",
     "description": "极速导航页"
+  },
+  {
+    "key": "memos",
+    "name": "Memos",
+    "description": "轻量级、隐私优先的碎片化笔记服务"
   }
 ]
