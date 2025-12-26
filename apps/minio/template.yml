@@ -1,0 +1,26 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: {{APP_NAME}}_app
+    restart: always
+    # 初始账号密码，建议安装后在界面修改或替换此处
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password123456
+      # --- 网关配置 (指向控制台) ---
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=9001
+    volumes:
+      - data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - proxy-net
+
+volumes:
+  data:
+
+networks:
+  proxy-net:
+    external: true
