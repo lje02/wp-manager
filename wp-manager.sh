@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.34 (快捷方式: wp)"
+VERSION="V9.31 (快捷方式: wp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -20,8 +20,6 @@ MONITOR_PID="$BASE_DIR/monitor.pid"
 MONITOR_SCRIPT="$BASE_DIR/monitor_daemon.sh"
 LISTENER_PID="$BASE_DIR/tg_listener.pid"
 LISTENER_SCRIPT="$BASE_DIR/tg_listener.sh"
-# 如果是海外机器，保持为空即可
-GH_PROXY="https://ghproxy.net/"
 # 自动更新源
 UPDATE_URL="https://raw.githubusercontent.com/lje02/wp-manager/main/wp-manager.sh"
 
@@ -1269,7 +1267,7 @@ services:
 
   # [核心网关] Nginx
   nginx-proxy:
-    image: nginxproxy/nginx-proxy
+    image: nginxproxy/nginx-proxy:alpine  # <--- 指定 alpine 标签
     container_name: gateway_proxy
     ports: 
       - "80:80"
