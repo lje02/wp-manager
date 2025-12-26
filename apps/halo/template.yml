@@ -1,21 +1,39 @@
 services:
+  # --- 1. Halo 应用容器 ---
   halo:
     image: halohub/halo:2.20
     container_name: {{APP_NAME}}_app
     restart: always
+    depends_on:
+      db:
+        condition: service_healthy # 等数据库完全启动后再启动 Halo
     expose:
       - "8090"
     environment:
+      # --- 网关与基础配置 ---
       - VIRTUAL_HOST={{DOMAIN}}
       - LETSENCRYPT_HOST={{DOMAIN}}
       - LETSENCRYPT_EMAIL={{EMAIL}}
       - VIRTUAL_PORT=8090
       - HALO_EXTERNAL_URL=https://{{DOMAIN}}/
-      - JVM_OPTS=-Xmx512m -Xms256m
+      
+      # --- 数据库连接配置 (PostgreSQL) ---
+      # Halo 2.x 使用 R2DBC 协议连接数据库
+      - SPRING_R2DBC_URL=r2dbc:pool:postgresql://db:5432/halo
+      - SPRING_R2DBC_USERNAME=halo
+      - SPRING_R2DBC_PASSWORD=halo_password
+      - SPRING_SQL_INIT_PLATFORM=postgresql
+      
+      # --- 性能优化 ---
+      - JVM_OPTS=-Xmx512m -Xms256m -Duser.timezone=Asia/Shanghai
+
     volumes:
       - halo_data:/root/.halo2
     networks:
       - proxy-net
+      - default
+    
+    # 健康检查
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8090/actuator/health/readiness"]
       interval: 30s
@@ -23,8 +41,30 @@ services:
       retries: 5
       start_period: 30s
 
+  # --- 2. 数据库容器 (PostgreSQL) ---
+  db:
+    image: postgres:15-alpine
+    container_name: {{APP_NAME}}_db
+    restart: always
+    environment:
+      - POSTGRES_DB=halo
+      - POSTGRES_USER=halo
+      - POSTGRES_PASSWORD=halo_password
+      - TZ=Asia/Shanghai
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - default
+    # 数据库健康检查 (确保 Halo 能连上)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U halo -d halo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   halo_data:
+  db_data:
 
 networks:
   proxy-net:
