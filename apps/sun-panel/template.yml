@@ -1,0 +1,23 @@
+services:
+  sun-panel:
+    image: hslr/sun-panel:latest
+    container_name: {{APP_NAME}}_app
+    restart: always
+    environment:
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=3002
+    volumes:
+      - data:/app/conf
+      - uploads:/app/uploads
+    networks:
+      - proxy-net
+
+volumes:
+  data:
+  uploads:
+
+networks:
+  proxy-net:
+    external: true
