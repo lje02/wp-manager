@@ -1,0 +1,21 @@
+services:
+  memos:
+    image: neosmemo/memos:stable
+    container_name: {{APP_NAME}}_app
+    restart: always
+    environment:
+      - VIRTUAL_HOST={{DOMAIN}}
+      - LETSENCRYPT_HOST={{DOMAIN}}
+      - LETSENCRYPT_EMAIL={{EMAIL}}
+      - VIRTUAL_PORT=5230
+    volumes:
+      - data:/var/opt/memos
+    networks:
+      - proxy-net
+
+volumes:
+  data:
+
+networks:
+  proxy-net:
+    external: true
