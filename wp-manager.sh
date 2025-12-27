@@ -1660,15 +1660,50 @@ EOF
 
 function create_proxy() {
     read -p "1. 已解析到本机域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
-    echo -e "1.域名模式 2.IP:端口"; read -p "类型: " t; if [ "$t" == "2" ]; then read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"; read -p "端口: " p; tu="http://$ip:$p"; pm="2"; else read -p "目标URL: " tu; tu=$(normalize_url "$tu"); echo "1.多源聚合 2.普通代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"; fi
+    echo -e "1.域名模式 2.IP:端口"; read -p "类型: " t
+    if [ "$t" == "2" ]; then 
+        read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"
+        read -p "端口: " p; tu="http://$ip:$p"; pm="2"
+    else 
+        read -p "目标URL: " tu; tu=$(normalize_url "$tu")
+        echo "1.多源聚合 2.普通代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"
+    fi
+    
     generate_nginx_conf "$tu" "$d" "$pm"
+    
+    # 修复：改用多行 YAML 格式，避免逗号错误
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
-  proxy: {image: nginx:alpine, container_name: ${d//./_}_worker, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [./nginx-proxy.conf:/etc/nginx/conf.d/default.conf], extra_hosts: ["host.docker.internal:host-gateway"], environment: {VIRTUAL_HOST: "$fd", LETSENCRYPT_HOST: "$fd", LETSENCRYPT_EMAIL: "$e"}, networks: [proxy-net]}
-networks: {proxy-net: {external: true}}
+  proxy:
+    image: nginx:alpine
+    container_name: ${d//./_}_worker
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/conf.d/default.conf
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      VIRTUAL_HOST: "$fd"
+      LETSENCRYPT_HOST: "$fd"
+      LETSENCRYPT_EMAIL: "$e"
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true
 EOF
-    cd "$sdir" && docker compose up -d; check_ssl_status "$d"; write_log "Created proxy $d"
+
+    cd "$sdir" && docker compose up -d
+    check_ssl_status "$d"
+    write_log "Created proxy $d"
 }
+
 function generate_nginx_conf() {
     local u=$1; local d=$2; local m=$3; local h=$(echo $u|awk -F/ '{print $3}'); local f="$SITES_DIR/$d/nginx-proxy.conf"
     echo "server { listen 80; server_name localhost; resolver 1.1.1.1; location / {" > "$f"
@@ -1682,7 +1717,43 @@ EOF
 ((c++)); done; echo "sub_filter_once off; sub_filter_types *;" >> "$f"; fi; echo "}" >> "$f"; [ -f "$f.loc" ] && cat "$f.loc" >> "$f" && rm "$f.loc"; echo "}" >> "$f"
 }
 
-function create_redirect() { read -p "Src Domain: " s; read -p "Target URL: " t; t=$(normalize_url "$t"); read -p "Email: " e; sdir="$SITES_DIR/$s"; mkdir -p "$sdir"; echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"; echo "services: {redirector: {image: nginx:alpine, container_name: ${s//./_}_redirect, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [./redirect.conf:/etc/nginx/conf.d/default.conf], environment: {VIRTUAL_HOST: \"$s\", LETSENCRYPT_HOST: \"$s\", LETSENCRYPT_EMAIL: \"$e\"}, networks: [proxy-net]}}" > "$sdir/docker-compose.yml"; echo "networks: {proxy-net: {external: true}}" >> "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; check_ssl_status "$s"; }
+function create_redirect() { 
+    read -p "Src Domain: " s
+    read -p "Target URL: " t; t=$(normalize_url "$t")
+    read -p "Email: " e
+    sdir="$SITES_DIR/$s"; mkdir -p "$sdir"
+    
+    echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"
+    
+    # 修复：改用多行 YAML 格式
+    cat > "$sdir/docker-compose.yml" <<EOF
+services:
+  redirector:
+    image: nginx:alpine
+    container_name: ${s//./_}_redirect
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ./redirect.conf:/etc/nginx/conf.d/default.conf
+    environment:
+      VIRTUAL_HOST: "$s"
+      LETSENCRYPT_HOST: "$s"
+      LETSENCRYPT_EMAIL: "$e"
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true
+EOF
+
+    cd "$sdir" && docker compose up -d
+    check_ssl_status "$s"
+}
 
 function delete_site() { while true; do clear; echo "=== 🗑️ 删除网站 ==="; ls -1 "$SITES_DIR"; echo "----------------"; read -p "域名(0返回): " d; [ "$d" == "0" ] && return; if [ -d "$SITES_DIR/$d" ]; then read -p "确认? (y/n): " c; [ "$c" == "y" ] && cd "$SITES_DIR/$d" && docker compose down -v >/dev/null 2>&1 && cd .. && rm -rf "$SITES_DIR/$d" && echo "Deleted"; write_log "Deleted site $d"; fi; pause_prompt; done; }
 
@@ -2269,5 +2340,4 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
-
 
