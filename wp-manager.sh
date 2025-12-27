@@ -1378,6 +1378,7 @@ function init_gateway() {
     echo "client_max_body_size 1024m;" > upload_size.conf
     echo "proxy_read_timeout 600s;" >> upload_size.conf
     echo "proxy_send_timeout 600s;" >> upload_size.conf
+    echo "server_tokens off;" >> upload_size.conf 
     
     # 4. 生成 Docker Compose (修复了 Tab 缩进问题)
     cat > docker-compose.yml <<EOF
