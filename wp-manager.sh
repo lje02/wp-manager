@@ -1701,7 +1701,7 @@ function backup_restore_ops() {
 
             4) 
                 # 添加定时任务: 每天凌晨 02:00
-                (crontab -l 2>/dev/null | grep -v "wp-backup-daily"; echo "0 2 * * * /usr/bin/wp backup_all >> $LOG_DIR/backup.log 2>&1 #wp-backup-daily") | crontab -
+                (crontab -l 2>/dev/null | grep -v "wp-backup-daily"; echo "0 2 * * * /usr/bin/mmp backup_all >> $LOG_DIR/backup.log 2>&1 #wp-backup-daily") | crontab -
                 echo -e "${GREEN}✔ 已添加定时任务 (02:00)${NC}"
                 pause_prompt
                 ;;
