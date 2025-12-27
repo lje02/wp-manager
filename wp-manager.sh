@@ -582,25 +582,127 @@ function container_ops() {
 
 function component_manager() { 
     while true; do 
-        clear; echo -e "${YELLOW}=== 🆙 组件版本升降级 ===${NC}"
-        ls -1 "$SITES_DIR"; echo "--------------------------"; read -p "输入域名 (0返回): " d; [ "$d" == "0" ] && return
-        sdir="$SITES_DIR/$d"; cur_wp=$(grep "image: wordpress" "$sdir/docker-compose.yml"|awk '{print $2}'); cur_db=$(grep "image: .*sql" "$sdir/docker-compose.yml"|awk '{print $2}'); 
-        echo -e "当前: PHP=[$cur_wp] DB=[$cur_db]"
+        clear
+        echo -e "${YELLOW}=== 🆙 组件版本升降级 ===${NC}"
+        echo -e "${RED}⚠️  警告: 修改版本即重建容器。请确保配置兼容！${NC}"
+        
+        # 1. 选择站点
+        ls -1 "$SITES_DIR"
         echo "--------------------------"
-        echo " 1. 切换 PHP 版本"
-        echo " 2. 切换 数据库 版本 (高危)"
+        read -p "输入域名 (0返回): " d
+        [ "$d" == "0" ] && return
+        
+        sdir="$SITES_DIR/$d"
+        yml="$sdir/docker-compose.yml"
+        
+        if [ ! -f "$yml" ]; then echo -e "${RED}配置文件不存在${NC}"; sleep 1; continue; fi
+        
+        # 获取当前版本用于显示
+        cur_wp=$(grep "image: wordpress" "$yml" | head -1 | awk '{print $2}')
+        cur_db=$(grep "image: .*sql" "$yml" | head -1 | awk '{print $2}')
+        cur_redis=$(grep "image: redis" "$yml" | head -1 | awk '{print $2}')
+
+        echo -e "当前配置:"
+        echo -e " - WP:    $cur_wp"
+        echo -e " - DB:    $cur_db"
+        echo -e " - Redis: $cur_redis"
+        echo "--------------------------"
+        echo " 1. 切换 PHP 版本 (WordPress Image)"
+        echo " 2. 切换 数据库 版本 (⚠️ 高危)"
         echo " 3. 切换 Redis 版本"
-        echo " 4. 切换 Nginx 版本"
+        echo " 4. 切换 Nginx 版本 (推荐 Alpine)"
         echo " 0. 返回上一级"
         echo "--------------------------"
         read -p "请输入选项 [0-4]: " op
+        
         case $op in 
             0) break;; 
-            1) echo "1.PHP 7.4  2.PHP 8.0  3.PHP 8.1  4.PHP 8.2  5.Latest"; read -p "选择: " p; case $p in 1) t="php7.4-fpm-alpine";; 2) t="php8.0-fpm-alpine";; 3) t="php8.1-fpm-alpine";; 4) t="php8.2-fpm-alpine";; 5) t="fpm-alpine";; *) continue;; esac; sed -i "s|image: wordpress:.*|image: wordpress:$t|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "切换完成"; write_log "PHP update $d $t"; pause_prompt;; 
-            2) echo "1.MySQL5.7 2.MySQL8.0 3.Latest 4.MariaDB10.6 5.Latest"; read -p "选择: " v; case $v in 1) i="mysql:5.7";; 2) i="mysql:8.0";; 3) i="mysql:latest";; 4) i="mariadb:10.6";; 5) i="mariadb:latest";; *) continue;; esac; sed -i "s|image: .*sql:.*|image: $i|g" "$sdir/docker-compose.yml"; sed -i "s|image: mariadb:.*|image: $i|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "切换完成"; write_log "DB update $d $i"; pause_prompt;; 
-            3) echo "1.Redis6.2 2.Redis7.0 3.Latest"; read -p "选择: " r; case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; *) continue;; esac; sed -i "s|image: redis:.*|image: redis:$rt|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "切换完成"; write_log "Redis update $d $rt"; pause_prompt;; 
-            4) echo "1.Alpine 2.Latest"; read -p "选择: " n; [ "$n" == "2" ] && nt="latest" || nt="alpine"; sed -i "s|image: nginx:.*|image: nginx:$nt|g" "$sdir/docker-compose.yml"; cd "$sdir" && docker compose up -d; echo "切换完成"; write_log "Nginx update $d $nt"; pause_prompt;; 
+            
+            1) 
+                echo -e "${CYAN}--- 选择 PHP (FPM) 版本 ---${NC}"
+                echo "注意: 必须使用 FPM 版本以配合 Nginx 网关"
+                echo "1. PHP 7.4 (旧版)"
+                echo "2. PHP 8.0"
+                echo "3. PHP 8.1"
+                echo "4. PHP 8.2 (稳定)"
+                echo "5. PHP 8.3 (最新)"
+                echo "6. Latest FPM (始终最新)"
+                read -p "选择: " p
+                case $p in 
+                    1) t="php7.4-fpm-alpine";; 
+                    2) t="php8.0-fpm-alpine";; 
+                    3) t="php8.1-fpm-alpine";; 
+                    4) t="php8.2-fpm-alpine";; 
+                    5) t="php8.3-fpm-alpine";; 
+                    6) t="fpm-alpine";; # 修正点：确保是 fpm-alpine，不是 latest
+                    *) continue;; 
+                esac
+                # 使用更精确的正则，只替换 image: wordpress 开头的行
+                sed -i "s|image: wordpress:.*|image: wordpress:$t|g" "$yml"
+                write_log "PHP update $d -> $t"
+                ;; 
+            
+            2) 
+                echo -e "${RED}🛑 严重警告: 数据库版本变更可能导致数据无法读取！${NC}"
+                echo -e "${YELLOW}特别是【降级】(如 8.0 -> 5.7) 通常会导致容器无法启动。${NC}"
+                echo -e "${YELLOW}跨类型切换 (MySQL <-> MariaDB) 也可能存在兼容问题。${NC}"
+                read -p "我已备份数据，确认继续? (yes/no): " confirm
+                if [ "$confirm" != "yes" ]; then continue; fi
+
+                echo "1. MySQL 5.7"
+                echo "2. MySQL 8.0"
+                echo "3. MySQL 8.4 LTS"
+                echo "4. MariaDB 10.6"
+                echo "5. MariaDB 11.4"
+                read -p "选择: " v
+                case $v in 
+                    1) i="mysql:5.7";; 
+                    2) i="mysql:8.0";; 
+                    3) i="mysql:8.4";; 
+                    4) i="mariadb:10.6";; 
+                    5) i="mariadb:11.4";; 
+                    *) continue;; 
+                esac
+                # 同时处理 mysql 和 mariadb 的匹配情况
+                if grep -q "image: mysql" "$yml"; then
+                    sed -i "s|image: mysql:.*|image: $i|g" "$yml"
+                elif grep -q "image: mariadb" "$yml"; then
+                    sed -i "s|image: mariadb:.*|image: $i|g" "$yml"
+                fi
+                write_log "DB update $d -> $i"
+                ;; 
+            
+            3) 
+                echo "1. Redis 6.2"
+                echo "2. Redis 7.0"
+                echo "3. Redis 7.2"
+                read -p "选择: " r
+                case $r in 
+                    1) rt="6.2-alpine";; 
+                    2) rt="7.0-alpine";; 
+                    3) rt="7.2-alpine";; 
+                    *) continue;; 
+                esac
+                sed -i "s|image: redis:.*|image: redis:$rt|g" "$yml"
+                write_log "Redis update $d -> $rt"
+                ;; 
+            
+            4) 
+                echo "1. Nginx Alpine (推荐)"
+                echo "2. Nginx Latest (不推荐)"
+                read -p "选择: " n
+                if [ "$n" == "2" ]; then nt="latest"; else nt="alpine"; fi
+                sed -i "s|image: nginx:.*|image: nginx:$nt|g" "$yml"
+                write_log "Nginx update $d -> $nt"
+                ;;
         esac
+
+        # 应用更改
+        echo -e "${YELLOW}>>> 正在重构容器...${NC}"
+        cd "$sdir"
+        $DOCKER_COMPOSE_CMD up -d
+        echo -e "${GREEN}✔ 更新完成${NC}"
+        pause_prompt
     done 
 }
 
@@ -1394,45 +1496,161 @@ function create_site() {
     echo -e "${YELLOW}自定义版本? (默:PHP8.3/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust; pt="php8.3-fpm-alpine"; di="mysql:8.0"; rt="7.0-alpine"
     if [ "$cust" == "y" ]; then echo "PHP: 1.7.4 2.8.0 3.8.1 4.8.2 5.8.3 6.最新"; read -p "选: " p; case $p in 1) pt="php7.4-fpm-alpine";; 2) pt="php8.0-fpm-alpine";; 3) pt="php8.1-fpm-alpine";; 4) pt="php8.2-fpm-alpine";; 5) pt="php8.3-fpm-alpine";; 6) pt="fpm-alpine";; esac; echo "DB: 1.M5.7 2.M8.0 3.最新 4.Ma10.6 5.最新"; read -p "选: " d; case $d in 1) di="mysql:5.7";; 2) di="mysql:8.0";; 3) di="mysql:latest";; 4) di="mariadb:10.6";; 5) di="mariadb:latest";; esac; echo "Redis: 1.6.2 2.7.0 3.最新"; read -p "选: " r; case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; esac; fi
     pname=$(echo $fd|tr '.' '_'); sdir="$SITES_DIR/$fd"; [ -d "$sdir" ] && echo -e "已存在" && pause_prompt && return; mkdir -p "$sdir"
+       # --- 生成配置文件 (修复为标准多行格式，解决 Line 13 报错) ---
+    
+    # 1. 生成 WAF 配置
     cat > "$sdir/waf.conf" <<EOF
 location ~* /\.(git|env|sql) { deny all; return 403; }
 location ~* wp-config\.php$ { deny all; return 403; }
 EOF
+
+    # 2. 生成 Nginx 配置
     cat > "$sdir/nginx.conf" <<EOF
-server { listen 80; server_name localhost; root /var/www/html; index index.php; include /etc/nginx/waf.conf; client_max_body_size 512M; location / { try_files \$uri \$uri/ /index.php?\$args; } location ~ \.php$ { try_files \$uri =404; fastcgi_split_path_info ^(.+\.php)(/.+)$; fastcgi_pass wordpress:9000; fastcgi_index index.php; include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; fastcgi_param PATH_INFO \$fastcgi_path_info; fastcgi_read_timeout 600; } }
+server { 
+    listen 80; 
+    server_name localhost;
+    server_tokens off;
+    root /var/www/html; 
+    index index.php; 
+    include /etc/nginx/waf.conf; 
+    client_max_body_size 512M; 
+    
+    location / { 
+        try_files \$uri \$uri/ /index.php?\$args; 
+    } 
+    
+    location ~ \.php$ { 
+        try_files \$uri =404; 
+        fastcgi_split_path_info ^(.+\.php)(/.+)$; 
+        fastcgi_pass wordpress:9000; 
+        fastcgi_index index.php; 
+        include fastcgi_params; 
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; 
+        fastcgi_param PATH_INFO \$fastcgi_path_info; 
+        fastcgi_read_timeout 600; 
+    } 
+}
 EOF
+
+    # 3. 生成 PHP 上传限制配置
     cat > "$sdir/uploads.ini" <<EOF
 file_uploads = On
 memory_limit = 512M
 upload_max_filesize = 512M
 post_max_size = 512M
 max_execution_time = 600
+expose_php = Off
 EOF
- # [V8改进] 添加 logging 配置
+
+    # 4. 生成 Docker Compose (这是最关键的修改)
+    # 这里的变量 $pt, $di, $rt, $db_pass, $fd, $email, $pname 来自函数前半部分
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
-  db: {image: $di, container_name: ${pname}_db, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, environment: {MYSQL_ROOT_PASSWORD: $db_pass, MYSQL_DATABASE: wordpress, MYSQL_USER: wp_user, MYSQL_PASSWORD: $db_pass}, volumes: [db_data:/var/lib/mysql], networks: [default]}
-  
-  redis: 
+  db:
+    image: $di
+    container_name: ${pname}_db
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      MYSQL_ROOT_PASSWORD: "$db_pass"
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wp_user
+      MYSQL_PASSWORD: "$db_pass"
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - default
+
+  redis:
     image: redis:$rt
     container_name: ${pname}_redis
     restart: always
-    command: redis-server --appendonly yes  # <--- [新增] 开启 AOF 持久化
-    logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
-    volumes: 
-      - redis_data:/data  # <--- [新增] 挂载数据卷
-    networks: [default]
+    command: redis-server --appendonly yes
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - redis_data:/data
+    networks:
+      - default
 
-  wordpress: {image: wordpress:$pt, container_name: ${pname}_app, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, depends_on: [db, redis], environment: {WORDPRESS_DB_HOST: db, WORDPRESS_DB_USER: wp_user, WORDPRESS_DB_PASSWORD: $db_pass, WORDPRESS_DB_NAME: wordpress, WORDPRESS_CONFIG_EXTRA: "define('WP_REDIS_HOST','redis');define('WP_REDIS_PORT',6379);define('WP_HOME','https://'.\$\$_SERVER['HTTP_HOST']);define('WP_SITEURL','https://'.\$\$_SERVER['HTTP_HOST']);if(isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'])&&strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'],'https')!==false){\$\$_SERVER['HTTPS']='on';}"}, volumes: [wp_data:/var/www/html, ./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini], networks: [default]}
-  
-  nginx: {image: nginx:alpine, container_name: ${pname}_nginx, restart: always, logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}, volumes: [wp_data:/var/www/html, ./nginx.conf:/etc/nginx/conf.d/default.conf, ./waf.conf:/etc/nginx/waf.conf], environment: {VIRTUAL_HOST: "$fd", LETSENCRYPT_HOST: "$fd", LETSENCRYPT_EMAIL: "$email"}, networks: [default, proxy-net]}
+  wordpress:
+    image: wordpress:$pt
+    container_name: ${pname}_app
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - db
+      - redis
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wp_user
+      WORDPRESS_DB_PASSWORD: "$db_pass"
+      WORDPRESS_DB_NAME: wordpress
+      # 注意：下面这行很长，必须小心引号转义
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_REDIS_HOST', 'redis');
+        define('WP_REDIS_PORT', 6379);
+        define('WP_HOME', 'https://' . \$_SERVER['HTTP_HOST']);
+        define('WP_SITEURL', 'https://' . \$_SERVER['HTTP_HOST']);
+        if (isset(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
+            \$_SERVER['HTTPS'] = 'on';
+        }
+    volumes:
+      - wp_data:/var/www/html
+      - ./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
+    networks:
+      - default
 
-volumes: {db_data: , wp_data: , redis_data: } # <--- [新增] redis_data 定义
-networks: {proxy-net: {external: true}}
+  nginx:
+    image: nginx:alpine
+    container_name: ${pname}_nginx
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - wp_data:/var/www/html
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./waf.conf:/etc/nginx/waf.conf
+    environment:
+      VIRTUAL_HOST: "$fd"
+      LETSENCRYPT_HOST: "$fd"
+      LETSENCRYPT_EMAIL: "$email"
+    networks:
+      - default
+      - proxy-net
+
+volumes:
+  db_data:
+  wp_data:
+  redis_data:
+
+networks:
+  proxy-net:
+    external: true
 EOF
-$DOCKER_COMPOSE_CMD
-    cd "$sdir" && $DOCKER_COMPOSE_CMD up -d; check_ssl_status "$fd"; write_log "Created site $fd"
+
+    # 5. 启动容器
+    echo -e "${GREEN}>>> 正在启动容器...${NC}"
+    $DOCKER_COMPOSE_CMD -f "$sdir/docker-compose.yml" up -d
+    
+    check_ssl_status "$fd"
+    write_log "Created site $fd (PHP:$pt DB:$di Redis:$rt)"
 }
+
 function create_proxy() {
     read -p "1. 已解析到本机域名: " d; fd="$d"; read -p "2. 邮箱: " e; sdir="$SITES_DIR/$d"; mkdir -p "$sdir"
     echo -e "1.域名模式 2.IP:端口"; read -p "类型: " t; if [ "$t" == "2" ]; then read -p "IP: " ip; [ -z "$ip" ] && ip="127.0.0.1"; read -p "端口: " p; tu="http://$ip:$p"; pm="2"; else read -p "目标URL: " tu; tu=$(normalize_url "$tu"); echo "1.多源聚合 2.普通代理"; read -p "模式: " pm; [ -z "$pm" ] && pm="1"; fi
