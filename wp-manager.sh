@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.38 (快捷方式: mmp)"
+VERSION="V9.3.1 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
