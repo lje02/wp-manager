@@ -351,11 +351,12 @@ function security_center() {
             F2B_ST="${YELLOW}● 未安装${NC}"
         fi
 
-        # 3. WAF状态
+        # 3. WAF状态 (这里修复了检测逻辑：把 V69 改为了 V9)
         if [ -z "$(ls -A $SITES_DIR)" ]; then
             WAF_ST="${YELLOW}● 无站点${NC}"
         else
-            if grep -r "V69 Ultra WAF Rules" "$SITES_DIR" >/dev/null 2>&1; then 
+            # 修改点：这里原来是 V69，改成了 V9 以匹配 waf_manager 写入的内容
+            if grep -r "V9 Ultra WAF Rules" "$SITES_DIR" >/dev/null 2>&1; then 
                 WAF_ST="${GREEN}● 已部署 (增强版)${NC}"
             elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
                 WAF_ST="${YELLOW}● 已部署 (基础版)${NC}"
@@ -1842,7 +1843,158 @@ function manage_remarks() {
     done
 }
 
-function cert_management() { while true; do clear; echo "1.列表 2.上传 3.重置 4.续签 0.返回"; read -p "选: " c; case $c in 0) return;; 1) docker exec gateway_proxy ls -lh /etc/nginx/certs|grep .crt; pause_prompt;; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "crt: " c; read -p "key: " k; docker cp "$c" gateway_acme:"/etc/nginx/certs/$d.crt"; docker cp "$k" gateway_acme:"/etc/nginx/certs/$d.key"; docker exec gateway_proxy nginx -s reload; echo "OK"; pause_prompt;; 3) read -p "域名: " d; docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key"; docker restart gateway_acme; echo "OK"; pause_prompt;; 4) docker exec gateway_acme /app/force_renew; echo "OK"; pause_prompt;; esac; done; }
+function cert_management() {
+    # 依赖工具函数：计算剩余天数
+    function get_cert_days() {
+        local end_date=$1
+        local end_timestamp=$(date -d "$end_date" +%s 2>/dev/null)
+        # 如果系统 date 命令不支持 -d (如某些非 GNU 系统)，尝试其他格式，这里假设是标准 Linux
+        if [ -z "$end_timestamp" ]; then echo "未知"; return; fi
+        local now_timestamp=$(date +%s)
+        echo $(( (end_timestamp - now_timestamp) / 86400 ))
+    }
+
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🔐 HTTPS 证书高级管理中心 ===${NC}"
+        echo -e "核心网关: gateway_proxy | 签发容器: gateway_acme"
+        echo "---------------------------------------------------------"
+        echo -e " 1. ${GREEN}证书状态看板${NC} (显示过期时间/剩余天数)"
+        echo " 2. 查看申请日志 (排查申请卡住/失败原因)"
+        echo " 3. 强制重签所有证书 (Force Renew)"
+        echo " 4. 部署自定义证书 (上传 .crt 和 .key)"
+        echo " 5. 删除/重置指定证书"
+        echo " 6. 备份所有证书到本地"
+        echo " 0. 返回上一级"
+        echo "---------------------------------------------------------"
+        read -p "请输入选项 [0-6]: " c
+        
+        case $c in
+            0) return;;
+            
+            1)
+                clear
+                echo -e "${YELLOW}>>> 正在扫描证书信息，请稍候...${NC}"
+                printf "${CYAN}%-25s %-30s %-10s${NC}\n" "域名 (Domain)" "过期时间 (Expire)" "剩余天数"
+                echo "----------------------------------------------------------------------"
+                
+                # 遍历容器内的证书文件
+                # 使用 docker exec 执行 find 命令获取所有 .crt 文件
+                certs=$(docker exec gateway_acme find /etc/nginx/certs -name "*.crt" 2>/dev/null)
+                
+                if [ -z "$certs" ]; then
+                    echo "⚠️  暂无证书。"
+                else
+                    for cert_path in $certs; do
+                        domain=$(basename "$cert_path" .crt)
+                        # 忽略 default 证书
+                        if [ "$domain" == "default" ]; then continue; fi
+                        
+                        # 在容器内使用 openssl 读取证书信息
+                        end_date=$(docker exec gateway_acme openssl x509 -in "$cert_path" -noout -enddate 2>/dev/null | cut -d= -f2)
+                        
+                        if [ ! -z "$end_date" ]; then
+                            # 计算剩余天数 (在宿主机计算)
+                            days_left=$(get_cert_days "$end_date")
+                            
+                            # 颜色高亮：小于7天红色，小于30天黄色，其他绿色
+                            color=$GREEN
+                            if [[ "$days_left" != "未知" ]]; then
+                                if [ "$days_left" -lt 7 ]; then color=$RED
+                                elif [ "$days_left" -lt 30 ]; then color=$YELLOW
+                                fi
+                            fi
+                            
+                            printf "%-25s %-30s ${color}%-10s${NC}\n" "$domain" "$end_date" "${days_left}天"
+                        fi
+                    done
+                fi
+                echo "----------------------------------------------------------------------"
+                pause_prompt
+                ;;
+                
+            2)
+                echo -e "${YELLOW}>>> 正在获取最近 50 条 ACME 日志...${NC}"
+                echo -e "提示: 关注 ${RED}Error${NC}, ${RED}Timeout${NC}, ${RED}Connection refused${NC}"
+                echo "---------------------------------------------------------"
+                docker logs --tail 50 gateway_acme
+                echo "---------------------------------------------------------"
+                pause_prompt
+                ;;
+                
+            3)
+                echo -e "${RED}⚠️  警告: 强制重签所有证书可能触发 Let's Encrypt 的速率限制 (5次/周)。${NC}"
+                echo -e "仅建议在证书即将过期但未自动续期时使用。"
+                read -p "确认执行? (输入 renew 确认): " confirm
+                if [ "$confirm" == "renew" ]; then
+                    echo -e "${YELLOW}正在执行强制续签...${NC}"
+                    docker exec gateway_acme /app/force_renew
+                    echo -e "${GREEN}✔ 命令已发送，请通过 [2] 查看日志关注进度。${NC}"
+                else
+                    echo "已取消"
+                fi
+                pause_prompt
+                ;;
+                
+            4)
+                echo -e "${YELLOW}>>> 部署自定义证书 (Custom SSL)${NC}"
+                ls -1 "$SITES_DIR"
+                echo "--------------------------"
+                read -p "请输入绑定的域名: " d
+                
+                # 检查域名目录是否存在 (防止输错)
+                if [ ! -d "$SITES_DIR/$d" ]; then echo -e "${RED}错误: 站点目录 $d 不存在${NC}"; pause_prompt; continue; fi
+                
+                read -p "请输入 .crt/.pem 文件绝对路径: " crt_file
+                read -p "请输入 .key 文件绝对路径: " key_file
+                
+                if [ -f "$crt_file" ] && [ -f "$key_file" ]; then
+                    echo -e "${YELLOW}正在部署...${NC}"
+                    # 关键优化：重命名为 Nginx-Proxy 识别的标准格式 (域名.crt / 域名.key)
+                    docker cp "$crt_file" gateway_acme:"/etc/nginx/certs/$d.crt"
+                    docker cp "$key_file" gateway_acme:"/etc/nginx/certs/$d.key"
+                    
+                    # 权限修正 (可选)
+                    docker exec gateway_acme chmod 644 "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key"
+                    
+                    # 重载网关
+                    docker exec gateway_proxy nginx -s reload
+                    echo -e "${GREEN}✔ 证书已部署并生效！${NC}"
+                else
+                    echo -e "${RED}❌ 文件不存在，请检查路径。${NC}"
+                fi
+                pause_prompt
+                ;;
+                
+            5)
+                echo -e "${RED}>>> 删除证书 (Reset SSL)${NC}"
+                echo "这会删除本地证书文件，并触发 ACME 容器重新尝试申请(如果站点还存在)。"
+                read -p "请输入要删除的域名: " d
+                read -p "确认删除 $d 的证书吗? (y/n): " confirm
+                if [ "$confirm" == "y" ]; then
+                    # 彻底清理：删除 crt, key, 还有 ACME 的 json 记录(虽然比较难精准删 json，但删文件能触发重新签发)
+                    docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key" "/etc/nginx/certs/$d.chain.pem"
+                    # 重启 ACME 容器以刷新状态
+                    docker restart gateway_acme
+                    echo -e "${GREEN}✔ 证书文件已删除，ACME 进程已重启。${NC}"
+                    echo "请等待 1-2 分钟让系统尝试重新申请。"
+                fi
+                pause_prompt
+                ;;
+            
+            6)
+                local backup_dir="$BASE_DIR/certs_backup_$(date +%Y%m%d)"
+                echo -e "${YELLOW}>>> 正在备份证书到: $backup_dir ...${NC}"
+                mkdir -p "$backup_dir"
+                # 从容器复制所有证书
+                docker cp gateway_acme:/etc/nginx/certs/. "$backup_dir"
+                echo -e "${GREEN}✔ 备份完成。${NC}"
+                echo "包含 .crt 和 .key 文件，请妥善保管私钥！"
+                pause_prompt
+                ;;
+        esac
+    done
+}
 
 function db_manager() { while true; do clear; echo "1.导出 2.导入 0.返回"; read -p "选: " c; case $c in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$s/${d}.sql"; echo "OK: $s/${d}.sql";; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "SQL File: " f; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); cat "$f" | docker compose -f "$s/docker-compose.yml" exec -T db mysql -u root -p"$pwd"; echo "OK";; esac; pause_prompt; done; }
 
