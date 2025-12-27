@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.36 (快捷方式: mmp)"
+VERSION="V9.37 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -1369,18 +1369,18 @@ function init_gateway() {
     if ! docker network ls | grep -q proxy-net; then docker network create proxy-net >/dev/null; fi
     mkdir -p "$GATEWAY_DIR" "$LOG_DIR" "$FW_DIR"
     
-    # 2. 初始化空配置文件，防止挂载报错
+    # 2. 初始化空配置文件
     touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf" "$FW_DIR/bots.conf"
 
     cd "$GATEWAY_DIR"
     
-    # 3. Nginx 优化配置
+    # 3. Nginx 优化配置 (包含隐藏版本号)
     echo "client_max_body_size 1024m;" > upload_size.conf
     echo "proxy_read_timeout 600s;" >> upload_size.conf
     echo "proxy_send_timeout 600s;" >> upload_size.conf
-    echo "server_tokens off;" >> upload_size.conf 
+    echo "server_tokens off;" >> upload_size.conf
     
-    # 4. 生成 Docker Compose (修复了 Tab 缩进问题)
+    # 4. 生成 Docker Compose (已修复 Logging 格式)
     cat > docker-compose.yml <<EOF
 services:
   # [安全盾牌] Socket 代理
@@ -1407,7 +1407,9 @@ services:
       - "443:443"
     logging: 
       driver: "json-file"
-      options: {max-size: "10m", max-file: "3"}
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes: 
       - conf:/etc/nginx/conf.d
       - vhost:/etc/nginx/vhost.d
@@ -1434,7 +1436,11 @@ services:
   acme-companion:
     image: nginxproxy/acme-companion
     container_name: gateway_acme
-    logging: {driver: "json-file", options: {max-size: "10m", max-file: "3"}}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes: 
       - conf:/etc/nginx/conf.d
       - vhost:/etc/nginx/vhost.d
@@ -2263,4 +2269,5 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
+
 
