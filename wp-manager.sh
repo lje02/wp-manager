@@ -351,13 +351,13 @@ function security_center() {
             F2B_ST="${YELLOW}● 未安装${NC}"
         fi
 
-        # 3. WAF状态 (这里修复了检测逻辑：把 V69 改为了 V9)
+        # 3. WAF状态 
         if [ -z "$(ls -A $SITES_DIR)" ]; then
             WAF_ST="${YELLOW}● 无站点${NC}"
         else
-            # 修改点：这里原来是 V69
-            if grep -r "V10.1 Ultra WAF Rules" "$SITES_DIR" >/dev/null 2>&1; then 
-                WAF_ST="${GREEN}● 已部署 (增强版)${NC}"
+            # 关键点：这里必须匹配 V10.1
+            if grep -r "V10.1" "$SITES_DIR" >/dev/null 2>&1; then 
+                WAF_ST="${GREEN}● 已部署 (增强版 V10.1)${NC}"
             elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
                 WAF_ST="${YELLOW}● 已部署 (基础版)${NC}"
             else 
@@ -2540,4 +2540,5 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
+
 
