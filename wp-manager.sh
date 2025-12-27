@@ -333,7 +333,7 @@ function server_audit() {
 
 function security_center() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V9) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V10.1) ===${NC}"
         
         # 1. 防火墙状态
         if command -v ufw >/dev/null; then
@@ -356,7 +356,7 @@ function security_center() {
             WAF_ST="${YELLOW}● 无站点${NC}"
         else
             # 修改点：这里原来是 V69
-            if grep -r "V9 Ultra WAF Rules" "$SITES_DIR" >/dev/null 2>&1; then 
+            if grep -r "V10.1 Ultra WAF Rules" "$SITES_DIR" >/dev/null 2>&1; then 
                 WAF_ST="${GREEN}● 已部署 (增强版)${NC}"
             elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
                 WAF_ST="${YELLOW}● 已部署 (基础版)${NC}"
@@ -812,7 +812,7 @@ EOF
 
 function waf_manager() { 
     while true; do 
-        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V10 Ultimate) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V10.1 Pro) ===${NC}"
         echo " 1. 部署/更新 究极防御规则"
         echo " 2. 查看当前规则内容"
         echo " 0. 返回上一级"
@@ -821,75 +821,64 @@ function waf_manager() {
         case $o in 
             0) return;; 
             1) 
-                echo -e "${BLUE}>>> 正在生成 V10 究极防御规则...${NC}"
+                echo -e "${BLUE}>>> 正在生成 V10.1 修正版规则...${NC}"
                 
                 cat >/tmp/w <<EOF
 # ==================================================
-#   V10 Ultimate WAF Rules for Nginx / WordPress
+#   V10.1 Ultimate WAF Rules (Fixed)
 # ==================================================
 
 # --- [1] 系统与敏感文件保护 ---
-# 禁止访问代码文件、备份文件、数据库文件
 location ~* \.(engine|inc|info|install|make|module|profile|test|po|sh|.*sql|theme|tpl(\.php)?|xtmpl)$ { return 403; }
 location ~* \.(bak|config|sql|fla|psd|ini|log|sh|inc|swp|dist|exe|bat|dll)$ { return 403; }
 location ~* /\.(git|svn|hg|env|ssh|vscode|idea) { return 403; }
-
-# 禁止访问 WP 特有敏感文件
 location ~* (wp-config\.php|readme\.html|license\.txt|debug\.log)$ { return 403; }
-
-# 屏蔽 XML-RPC (不仅防爆破，还防 DDoS 放大攻击)
-# 如果你需要使用 Jetpack 插件或手机 APP 管理 WP，请注释掉下面这行
+# 屏蔽 XML-RPC (如需 Jetpack 请注释此行)
 location = /xmlrpc.php { deny all; return 403; }
 
-# --- [2] SQL 注入防御 (SQL Injection) ---
+# --- [2] SQL 注入防御 (增强版) ---
 set \$block_sql_injections 0;
-if (\$query_string ~* "union.*select.*\(") { set \$block_sql_injections 1; }
+# [修复点] 去掉了后面的括号限制，只要出现 union select 就拦截
+if (\$query_string ~* "union.*select") { set \$block_sql_injections 1; } 
 if (\$query_string ~* "union.*all.*select") { set \$block_sql_injections 1; }
 if (\$query_string ~* "concat.*\(") { set \$block_sql_injections 1; }
-# 拦截十六进制和常见的 SQL 注释攻击
 if (\$query_string ~* "(0x[0-9a-f][0-9a-f]|/\*|--|\|\|)") { set \$block_sql_injections 1; }
 if (\$block_sql_injections = 1) { return 403; }
 
-# --- [3] 文件包含与目录遍历 (LFI/RFI/RCE) ---
+# --- [3] 文件包含与目录遍历 ---
 set \$block_file_injections 0;
 if (\$query_string ~* "(\.\./|\.\.)") { set \$block_file_injections 1; }
 if (\$query_string ~* "(boot\.ini|etc/passwd|self/environ)") { set \$block_file_injections 1; }
 if (\$query_string ~* "(mosconfig|base64_encode|base64_decode|eval\(|popen\(|proc_open)") { set \$block_file_injections 1; }
 if (\$block_file_injections = 1) { return 403; }
 
-# --- [4] 跨站脚本攻击 (XSS) ---
+# --- [4] XSS 跨站脚本 ---
 set \$block_xss 0;
 if (\$query_string ~* "(<|%3C).*script") { set \$block_xss 1; }
 if (\$query_string ~* "javascript:") { set \$block_xss 1; }
 if (\$query_string ~* "(onload|onerror|onmouseover)=") { set \$block_xss 1; }
-if (\$query_string ~* "document\.cookie") { set \$block_xss 1; }
 if (\$block_xss = 1) { return 403; }
 
-# --- [5] 恶意扫描器与爬虫 (Bad Bots) ---
+# --- [5] 恶意爬虫 ---
 if (\$http_user_agent ~* (Acunetix|AppScan|ApacheBench|Burp|Dirbuster|Go-http-client|Harvest|Havij|Hydra|Java|Jorgee|libwww-perl|masscan|Nessus|Netsparker|Nikto|Nmap|OpenVAS|Pangolin|Python-urllib|SF|sqlmap|Swift|Wget|WinHttp|Xenu|ZmEu)) { return 403; }
-
-# --- [6] WordPress 用户枚举保护 ---
-# 防止通过 /?author=1 爆破用户名
-if (\$query_string ~* "author=([0-9]*)") { return 403; }
-
 EOF
                 count=0
                 for d in "$SITES_DIR"/*; do 
                     if [ -d "$d" ]; then 
-                        # 自动修复 nginx.conf 引用
+                        # 强力修复 nginx.conf 引用
                         if [ -f "$d/nginx.conf" ] && ! grep -q "waf.conf" "$d/nginx.conf"; then
-                             # 在 index index.php; 之前插入引用
-                             sed -i '/index index.php;/i \    include /etc/nginx/waf.conf;' "$d/nginx.conf"
+                             # 在 server { 下面的一行插入 include (更稳健的位置)
+                             sed -i '/server_name localhost;/a \    include /etc/nginx/waf.conf;' "$d/nginx.conf"
                              echo -e " - $(basename "$d"): ${YELLOW}修复配置引用${NC}"
                         fi
 
                         cp /tmp/w "$d/waf.conf" 
                         cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1
-                        echo -e " - $(basename "$d"): ${GREEN}V10 规则已生效${NC}"
+                        echo -e " - $(basename "$d"): ${GREEN}V10.1 规则已生效${NC}"
                         ((count++))
                     fi 
                 done
-                rm /tmp/w; echo -e "${GREEN}✔ 已为 $count 个站点部署顶级防御${NC}"; pause_prompt;; 
+                rm /tmp/w; echo -e "${GREEN}✔ 已部署 ${count} 个站点${NC}"; pause_prompt;; 
             2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null|head -30; pause_prompt;; 
         esac
     done 
