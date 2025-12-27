@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.37 (快捷方式: mmp)"
+VERSION="V9.38 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -1498,13 +1498,27 @@ EOF
 }
 
 function create_site() {
-    read -p "1. 域名: " fd; host_ip=$(curl -s4 ifconfig.me); if command -v dig >/dev/null; then dip=$(dig +short $fd|head -1); else dip=$(getent hosts $fd|awk '{print $1}'); fi; if [ ! -z "$dip" ] && [ "$dip" != "$host_ip" ]; then echo -e "${RED}IP不符${NC}"; read -p "继续? (y/n): " f; [ "$f" != "y" ] && return; fi
-    read -p "2. 邮箱: " email; read -p "3. DB密码: " db_pass
-    echo -e "${YELLOW}自定义版本? (默:PHP8.3/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust; pt="php8.3-fpm-alpine"; di="mysql:8.0"; rt="7.0-alpine"
-    if [ "$cust" == "y" ]; then echo "PHP: 1.7.4 2.8.0 3.8.1 4.8.2 5.8.3 6.最新"; read -p "选: " p; case $p in 1) pt="php7.4-fpm-alpine";; 2) pt="php8.0-fpm-alpine";; 3) pt="php8.1-fpm-alpine";; 4) pt="php8.2-fpm-alpine";; 5) pt="php8.3-fpm-alpine";; 6) pt="fpm-alpine";; esac; echo "DB: 1.M5.7 2.M8.0 3.最新 4.Ma10.6 5.最新"; read -p "选: " d; case $d in 1) di="mysql:5.7";; 2) di="mysql:8.0";; 3) di="mysql:latest";; 4) di="mariadb:10.6";; 5) di="mariadb:latest";; esac; echo "Redis: 1.6.2 2.7.0 3.最新"; read -p "选: " r; case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; esac; fi
-    pname=$(echo $fd|tr '.' '_'); sdir="$SITES_DIR/$fd"; [ -d "$sdir" ] && echo -e "已存在" && pause_prompt && return; mkdir -p "$sdir"
-       # --- 生成配置文件 (修复为标准多行格式，解决 Line 13 报错) ---
+    read -p "1. 域名: " fd
+    host_ip=$(curl -s4 ifconfig.me)
+    if command -v dig >/dev/null; then dip=$(dig +short $fd|head -1); else dip=$(getent hosts $fd|awk '{print $1}'); fi
+    if [ ! -z "$dip" ] && [ "$dip" != "$host_ip" ]; then echo -e "${RED}IP不符${NC}"; read -p "继续? (y/n): " f; [ "$f" != "y" ] && return; fi
     
+    read -p "2. 邮箱: " email
+    read -p "3. DB密码: " db_pass
+    
+    echo -e "${YELLOW}自定义版本? (默:PHP8.3/MySQL8.0/Redis7)${NC}"; read -p "y/n: " cust
+    pt="php8.3-fpm-alpine"; di="mysql:8.0"; rt="7.0-alpine"
+    if [ "$cust" == "y" ]; then 
+        echo "PHP: 1.7.4 2.8.0 3.8.1 4.8.2 5.8.3 6.最新"; read -p "选: " p
+        case $p in 1) pt="php7.4-fpm-alpine";; 2) pt="php8.0-fpm-alpine";; 3) pt="php8.1-fpm-alpine";; 4) pt="php8.2-fpm-alpine";; 5) pt="php8.3-fpm-alpine";; 6) pt="fpm-alpine";; esac
+        echo "DB: 1.M5.7 2.M8.0 3.最新 4.Ma10.6 5.最新"; read -p "选: " d
+        case $d in 1) di="mysql:5.7";; 2) di="mysql:8.0";; 3) di="mysql:latest";; 4) di="mariadb:10.6";; 5) di="mariadb:latest";; esac
+        echo "Redis: 1.6.2 2.7.0 3.最新"; read -p "选: " r
+        case $r in 1) rt="6.2-alpine";; 2) rt="7.0-alpine";; 3) rt="alpine";; esac
+    fi
+    
+    pname=$(echo $fd|tr '.' '_'); sdir="$SITES_DIR/$fd"; [ -d "$sdir" ] && echo -e "已存在" && pause_prompt && return; mkdir -p "$sdir"
+
     # 1. 生成 WAF 配置
     cat > "$sdir/waf.conf" <<EOF
 location ~* /\.(git|env|sql) { deny all; return 403; }
@@ -1549,8 +1563,7 @@ max_execution_time = 600
 expose_php = Off
 EOF
 
-    # 4. 生成 Docker Compose (这是最关键的修改)
-    # 这里的变量 $pt, $di, $rt, $db_pass, $fd, $email, $pname 来自函数前半部分
+    # 4. 生成 Docker Compose (已修复 Logging 和 环境变量)
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
   db:
@@ -1604,14 +1617,13 @@ services:
       WORDPRESS_DB_USER: wp_user
       WORDPRESS_DB_PASSWORD: "$db_pass"
       WORDPRESS_DB_NAME: wordpress
-      # 注意：下面这行很长，必须小心引号转义
       WORDPRESS_CONFIG_EXTRA: |
         define('WP_REDIS_HOST', 'redis');
         define('WP_REDIS_PORT', 6379);
-        define('WP_HOME', 'https://' . \$_SERVER['HTTP_HOST']);
-        define('WP_SITEURL', 'https://' . \$_SERVER['HTTP_HOST']);
-        if (isset(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
-            \$_SERVER['HTTPS'] = 'on';
+        define('WP_HOME', 'https://' . \$\$_SERVER['HTTP_HOST']);
+        define('WP_SITEURL', 'https://' . \$\$_SERVER['HTTP_HOST']);
+        if (isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
+            \$\$_SERVER['HTTPS'] = 'on';
         }
     volumes:
       - wp_data:/var/www/html
