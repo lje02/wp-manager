@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.35 (快捷方式: mmp)"
+VERSION="V9.36 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -390,7 +390,7 @@ function security_center() {
 function wp_toolbox() {
     # WP-CLI 工具箱
     while true; do
-        clear; echo -e "${YELLOW}=== 🛠️ WP-CLI 瑞士军刀 ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛠️ WP-CLI 工具 ===${NC}"
         ls -1 "$SITES_DIR"; echo "--------------------------"
         read -p "请输入要操作的域名 (0返回): " d; [ "$d" == "0" ] && return
         sdir="$SITES_DIR/$d"
@@ -1318,6 +1318,9 @@ services:
     environment: 
       - "TRUST_DOWNSTREAM_PROXY=true"
       - "DOCKER_HOST=tcp://gateway_socket_proxy:2375"
+	  - "HTTPS_METHOD=redirect"
+	  - "HSTS=on"
+	  - "HSTS_MAX_AGE=31536000"
     networks: 
       - "proxy-net"
     depends_on:
