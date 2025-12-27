@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.3.1 (快捷方式: mmp)"
+VERSION="V9.38 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -812,7 +812,7 @@ EOF
 
 function waf_manager() { 
     while true; do 
-        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V70) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V9 Pro) ===${NC}"
         echo " 1. 部署增强规则 (强制更新所有站点)"
         echo " 2. 查看当前规则"
         echo " 0. 返回上一级"
@@ -821,29 +821,46 @@ function waf_manager() {
         case $o in 
             0) return;; 
             1) 
-                echo -e "${BLUE}>>> 正在部署规则...${NC}"
+                echo -e "${BLUE}>>> 正在生成增强版规则...${NC}"
+                # 写入更通用、更强大的规则
                 cat >/tmp/w <<EOF
-# --- V9 Ultra WAF Rules ---
+# --- V9 Ultra WAF Rules (Enhanced) ---
+# 1. 禁止访问敏感文件
 location ~* /\.(git|svn|hg|env|bak|config|sql|db|key|pem|ssh|ftpconfig) { deny all; return 403; }
-location ~* \.(sql|bak|conf|ini|log|sh|yaml|yml|swp|install|dist)$ { deny all; return 403; }
-location ~* wp-config\.php$ { deny all; return 403; }
-if (\$query_string ~* "union.*select.*\(") { return 403; }
+location ~* \.(sql|bak|conf|ini|log|sh|yaml|yml|swp|install|dist|exe|bat)$ { deny all; return 403; }
+location ~* (wp-config\.php|readme\.html|license\.txt)$ { deny all; return 403; }
+
+# 2. 拦截 SQL 注入特征 (不强制要求括号)
+if (\$query_string ~* "union.*select") { return 403; }
 if (\$query_string ~* "concat.*\(") { return 403; }
-if (\$query_string ~* "base64_decode\(") { return 403; }
+
+# 3. 拦截代码执行特征
+if (\$query_string ~* "base64_(en|de)code") { return 403; }
 if (\$query_string ~* "eval\(") { return 403; }
-if (\$http_user_agent ~* (netcrawler|nikto|wikto|sf|sqlmap|bsqlbf|w3af|acunetix|havij|appscan)) { return 403; }
+if (\$query_string ~* "mosconfig") { return 403; }
+
+# 4. 拦截恶意扫描器 User-Agent
+if (\$http_user_agent ~* (netcrawler|nikto|wikto|sf|sqlmap|bsqlbf|w3af|acunetix|havij|appscan|strip|zmeu|scan|nessus)) { return 403; }
 EOF
                 count=0
+                # 遍历所有站点并分发
                 for d in "$SITES_DIR"/*; do 
                     if [ -d "$d" ]; then 
+                        # 检查该站点是否在 nginx.conf 中引用了 waf.conf
+                        # 如果没引用，自动尝试修复 (插入到 index index.php; 之前)
+                        if [ -f "$d/nginx.conf" ] && ! grep -q "waf.conf" "$d/nginx.conf"; then
+                             sed -i '/index index.php;/i \    include /etc/nginx/waf.conf;' "$d/nginx.conf"
+                             echo -e " - $(basename "$d"): ${YELLOW}修复了引用缺失${NC}"
+                        fi
+
                         cp /tmp/w "$d/waf.conf" 
                         cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1
-                        echo -e " - $(basename "$d"): ${GREEN}已更新${NC}"
+                        echo -e " - $(basename "$d"): ${GREEN}规则已更新${NC}"
                         ((count++))
                     fi 
                 done
                 rm /tmp/w; echo -e "${GREEN}✔ 成功部署 $count 个站点${NC}"; pause_prompt;; 
-            2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null|head -10; pause_prompt;; 
+            2) cat "$SITES_DIR/"*"/waf.conf" 2>/dev/null|head -20; pause_prompt;; 
         esac
     done 
 }
