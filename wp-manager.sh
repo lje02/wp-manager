@@ -1379,7 +1379,7 @@ function init_gateway() {
     echo "proxy_read_timeout 600s;" >> upload_size.conf
     echo "proxy_send_timeout 600s;" >> upload_size.conf
     
-    # 4. 生成 Docker Compose (集成有安全功能)
+    # 4. 生成 Docker Compose (修复了 Tab 缩进问题)
     cat > docker-compose.yml <<EOF
 services:
   # [安全盾牌] Socket 代理
@@ -1420,9 +1420,9 @@ services:
     environment: 
       - "TRUST_DOWNSTREAM_PROXY=true"
       - "DOCKER_HOST=tcp://gateway_socket_proxy:2375"
-	  - "HTTPS_METHOD=redirect"
-	  - "HSTS=on"
-	  - "HSTS_MAX_AGE=31536000"
+      - "HTTPS_METHOD=redirect"
+      - "HSTS=on"
+      - "HSTS_MAX_AGE=31536000"
     networks: 
       - "proxy-net"
     depends_on:
@@ -1480,13 +1480,13 @@ networks:
 EOF
 
     # 5. 启动
-    local cmd=${DOCKER_COMPOSE_CMD:-"docker compose"}
-    if $cmd up -d --remove-orphans >/dev/null 2>&1; then 
-        [ "$m" == "force" ] && echo -e "${GREEN}✔ 网关重建完成${NC}"
+    local cmd=\${DOCKER_COMPOSE_CMD:-"docker compose"}
+    if \$cmd up -d --remove-orphans >/dev/null 2>&1; then 
+        [ "\$m" == "force" ] && echo -e "\${GREEN}✔ 网关重建完成\${NC}"
     else 
-        echo -e "${RED}✘ 网关启动失败${NC}"
-        $cmd config
-        [ "$m" == "force" ] && $cmd up -d
+        echo -e "\${RED}✘ 网关启动失败\${NC}"
+        \$cmd config
+        [ "\$m" == "force" ] && \$cmd up -d
     fi 
 }
 
@@ -2262,3 +2262,4 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
+
