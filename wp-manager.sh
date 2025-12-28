@@ -388,6 +388,123 @@ function security_center() {
     done 
 }
 
+function ssh_key_manager() {
+    # 定义 SSH 配置文件路径
+    SSHD_CONFIG="/etc/ssh/sshd_config"
+    
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🔑 SSH 密钥安全管理 ===${NC}"
+        echo -e "当前状态检查："
+        
+        # 检查公钥认证是否开启
+        if grep -q "^PubkeyAuthentication yes" $SSHD_CONFIG; then
+            echo -e " - 公钥认证: ${GREEN}已开启${NC}"
+        else
+            echo -e " - 公钥认证: ${YELLOW}未显式开启 (默认可能支持)${NC}"
+        fi
+        
+        # 检查密码登录是否开启
+        if grep -q "^PasswordAuthentication no" $SSHD_CONFIG; then
+            echo -e " - 密码登录: ${GREEN}已关闭 (安全)${NC}"
+        else
+            echo -e " - 密码登录: ${RED}已开启 (存在爆破风险)${NC}"
+        fi
+
+        echo "------------------------------------------------"
+        echo " 1. 一键生成密钥 + 部署 (这是第一步)"
+        echo " 2. 关闭密码登录 (这是第二步，需先完成第一步)"
+        echo " 3. 恢复密码登录 (救急用)"
+        echo " 0. 返回上一级"
+        echo "------------------------------------------------"
+        read -p "请输入选项 [0-3]: " o
+        
+        case $o in
+            0) return;;
+            
+            1)
+                echo -e "${YELLOW}>>> 正在生成 4096位 RSA 密钥对...${NC}"
+                # 1. 生成临时密钥
+                TEMP_KEY="/root/temp_ssh_key"
+                rm -f "$TEMP_KEY" "$TEMP_KEY.pub"
+                ssh-keygen -t rsa -b 4096 -f "$TEMP_KEY" -N "" -q
+                
+                # 2. 部署公钥
+                mkdir -p /root/.ssh
+                chmod 700 /root/.ssh
+                cat "$TEMP_KEY.pub" >> /root/.ssh/authorized_keys
+                chmod 600 /root/.ssh/authorized_keys
+                
+                # 3. 开启 SSH 公钥支持 (如果没开的话)
+                if ! grep -q "^PubkeyAuthentication yes" $SSHD_CONFIG; then
+                    sed -i '/^#\?PubkeyAuthentication/d' $SSHD_CONFIG
+                    echo "PubkeyAuthentication yes" >> $SSHD_CONFIG
+                fi
+                
+                # 4. 显示私钥
+                clear
+                echo -e "${RED}====================================================${NC}"
+                echo -e "${RED}⚠️  请立即复制下面的私钥内容并保存到本地电脑！${NC}"
+                echo -e "${RED}⚠️  保存为 .pem 文件，或导入到 Xshell/Putty 中。${NC}"
+                echo -e "${RED}====================================================${NC}"
+                echo ""
+                cat "$TEMP_KEY"
+                echo ""
+                echo -e "${RED}====================================================${NC}"
+                echo -e "${GREEN}✔ 公钥已自动部署到服务器。${NC}"
+                
+                # 5. 清理私钥文件 (安全起见，不留在服务器上)
+                rm -f "$TEMP_KEY" "$TEMP_KEY.pub"
+                
+                echo -e "${YELLOW}提示: 请现在打开一个新的终端窗口，使用刚才的密钥尝试连接服务器。${NC}"
+                echo -e "确认可以连接后，再执行 [2] 关闭密码登录。"
+                pause_prompt
+                ;;
+                
+            2)
+                echo -e "${RED}⚠️  高危操作警告${NC}"
+                echo -e "在执行此操作前，请确保你已经：\n1. 生成并保存了密钥。\n2. 使用密钥成功测试了登录。"
+                echo -e "如果未配置好密钥就关闭密码登录，你将【彻底失去】服务器连接！"
+                echo "------------------------------------------------"
+                read -p "我确认已测试密钥登录成功 (输入 yes 确认): " confirm
+                
+                if [ "$confirm" == "yes" ]; then
+                    # 修改配置文件：禁止密码登录
+                    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/g' $SSHD_CONFIG
+                    # 确保 ChallengeResponseAuthentication 也是关闭的
+                    sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/g' $SSHD_CONFIG
+                    
+                    # 重启 SSH 服务
+                    if command -v systemctl >/dev/null; then
+                        systemctl restart sshd
+                    else
+                        service ssh restart
+                    fi
+                    
+                    echo -e "${GREEN}✔ 密码登录已关闭！服务器现在非常安全。${NC}"
+                else
+                    echo "操作已取消。"
+                fi
+                pause_prompt
+                ;;
+                
+            3)
+                echo -e "${YELLOW}>>> 正在恢复密码登录功能...${NC}"
+                sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' $SSHD_CONFIG
+                
+                if command -v systemctl >/dev/null; then
+                    systemctl restart sshd
+                else
+                    service ssh restart
+                fi
+                
+                echo -e "${GREEN}✔ 密码登录已重新开启。${NC}"
+                pause_prompt
+                ;;
+        esac
+    done
+}
+
 function wp_toolbox() {
     # WP-CLI 工具箱
     while true; do
@@ -2468,11 +2585,14 @@ function show_menu() {
     
     echo ""
 
-    # --- 4. 安全与审计 ---
+       # --- 4. 安全与审计 ---
     echo -e "${YELLOW}[🛡️ 安全与审计]${NC}"
     echo -e " 30. 安全防御中心 (WAF)        31. Telegram 通知"
     echo -e " 32. 系统资源监控              33. 脚本操作日志"
-    echo -e " 34. 容器日志 (找密码)         99. 重建核心网关"
+    # === 新增下面这一行 ===
+    echo -e " 34. 容器日志 (找密码)         35. ${GREEN}SSH 密钥管理${NC}" 
+    echo -e " 99. 重建核心网关"
+
 
     echo "----------------------------------------------------------------"
     echo -e "${BLUE} u. 更新脚本${NC} | ${RED}x. 卸载脚本${NC} | 0. 退出"
@@ -2530,7 +2650,8 @@ while true; do
         31) telegram_manager;; 
         32) sys_monitor;; 
         33) log_manager;; 
-        34) view_container_logs;; 
+        34) view_container_logs;;
+        35) ssh_key_manager;;
         99) rebuild_gateway_action;;
 
         # === 系统操作 ===
