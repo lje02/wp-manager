@@ -180,6 +180,39 @@ function update_script() {
     else echo -e "${RED}❌ 更新失败! 请检查网络或源地址。${NC}"; rm -f "$temp_file"; fi; pause_prompt
 }
 
+function create_systemd_service() {
+    local service_name=$1
+    local script_path=$2
+    local description=$3
+    local service_file="/etc/systemd/system/${service_name}.service"
+
+    echo -e "${YELLOW}>>> 正在注册系统服务: ${service_name}...${NC}"
+
+    cat > "$service_file" <<EOF
+[Unit]
+Description=$description
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash $script_path
+Restart=always
+RestartSec=10
+User=root
+# 确保环境变量正确
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$service_name"
+    systemctl start "$service_name"
+    echo -e "${GREEN}✔ 服务已启动并设置开机自启${NC}"
+}
+
 function send_tg_msg() {
     local msg=$1; if [ -f "$TG_CONF" ]; then source "$TG_CONF"; if [ ! -z "$TG_BOT_TOKEN" ] && [ ! -z "$TG_CHAT_ID" ]; then curl -s -X POST "https://api.telegram.org/bot$TG_BOT_TOKEN/sendMessage" -d chat_id="$TG_CHAT_ID" -d text="$msg" >/dev/null; fi; fi
 }
@@ -391,10 +424,41 @@ function security_center() {
 function ssh_key_manager() {
     # 定义 SSH 配置文件路径
     SSHD_CONFIG="/etc/ssh/sshd_config"
+    SSHD_BACKUP="/etc/ssh/sshd_config.bak"
     
+    # --- 内部函数：安全重启 SSH ---
+    function safe_restart_ssh() {
+        echo -e "${YELLOW}>>> 正在进行配置安全检查 (sshd -t)...${NC}"
+        
+        # 尝试寻找 sshd 二进制文件路径 (兼容不同发行版)
+        SSHD_BIN=$(command -v sshd || echo "/usr/sbin/sshd")
+        
+        if $SSHD_BIN -t -f "$SSHD_CONFIG"; then
+            echo -e "${GREEN}✔ 配置文件语法正确。${NC}"
+            
+            if command -v systemctl >/dev/null; then
+                systemctl restart sshd
+            else
+                service ssh restart
+            fi
+            echo -e "${GREEN}✔ SSH 服务已重启生效。${NC}"
+        else
+            echo -e "${RED}❌ 严重错误：配置文件语法检查失败！${NC}"
+            echo -e "${RED}❌ 系统拒绝重启 SSH 服务，以防止失联。${NC}"
+            echo -e "${YELLOW}>>> 正在回滚配置文件...${NC}"
+            if [ -f "$SSHD_BACKUP" ]; then
+                cp "$SSHD_BACKUP" "$SSHD_CONFIG"
+                echo -e "${GREEN}✔ 已还原至修改前的状态。${NC}"
+            else
+                echo -e "${RED}⚠️  未找到备份文件，请手动检查 $SSHD_CONFIG${NC}"
+            fi
+        fi
+    }
+    # -----------------------------
+
     while true; do
         clear
-        echo -e "${YELLOW}=== 🔑 SSH 密钥安全管理 ===${NC}"
+        echo -e "${YELLOW}=== 🔑 SSH 密钥安全管理 (Safe Mode) ===${NC}"
         echo -e "当前状态检查："
         
         # 检查公钥认证是否开启
@@ -435,10 +499,16 @@ function ssh_key_manager() {
                 cat "$TEMP_KEY.pub" >> /root/.ssh/authorized_keys
                 chmod 600 /root/.ssh/authorized_keys
                 
-                # 3. 开启 SSH 公钥支持 (如果没开的话)
+                # 3. 开启 SSH 公钥支持 (需要修改配置)
                 if ! grep -q "^PubkeyAuthentication yes" $SSHD_CONFIG; then
+                    echo -e "${YELLOW}>>> 检测到需开启 PubkeyAuthentication，正在修改配置...${NC}"
+                    cp "$SSHD_CONFIG" "$SSHD_BACKUP" # 备份
+                    
                     sed -i '/^#\?PubkeyAuthentication/d' $SSHD_CONFIG
                     echo "PubkeyAuthentication yes" >> $SSHD_CONFIG
+                    
+                    # 执行安全重启
+                    safe_restart_ssh
                 fi
                 
                 # 4. 显示私钥
@@ -469,19 +539,18 @@ function ssh_key_manager() {
                 read -p "我确认已测试密钥登录成功 (输入 yes 确认): " confirm
                 
                 if [ "$confirm" == "yes" ]; then
+                    echo -e "${YELLOW}>>> 正在修改配置以禁用密码登录...${NC}"
+                    cp "$SSHD_CONFIG" "$SSHD_BACKUP" # 备份
+                    
                     # 修改配置文件：禁止密码登录
                     sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/g' $SSHD_CONFIG
                     # 确保 ChallengeResponseAuthentication 也是关闭的
                     sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/g' $SSHD_CONFIG
                     
-                    # 重启 SSH 服务
-                    if command -v systemctl >/dev/null; then
-                        systemctl restart sshd
-                    else
-                        service ssh restart
-                    fi
+                    # 执行安全重启
+                    safe_restart_ssh
                     
-                    echo -e "${GREEN}✔ 密码登录已关闭！服务器现在非常安全。${NC}"
+                    echo -e "${GREEN}✔ 策略已应用。${NC}"
                 else
                     echo "操作已取消。"
                 fi
@@ -490,15 +559,14 @@ function ssh_key_manager() {
                 
             3)
                 echo -e "${YELLOW}>>> 正在恢复密码登录功能...${NC}"
+                cp "$SSHD_CONFIG" "$SSHD_BACKUP" # 备份
+                
                 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' $SSHD_CONFIG
                 
-                if command -v systemctl >/dev/null; then
-                    systemctl restart sshd
-                else
-                    service ssh restart
-                fi
+                # 执行安全重启
+                safe_restart_ssh
                 
-                echo -e "${GREEN}✔ 密码登录已重新开启。${NC}"
+                echo -e "${GREEN}✔ 策略已应用。${NC}"
                 pause_prompt
                 ;;
         esac
@@ -555,30 +623,78 @@ function wp_toolbox() {
 }
 
 function telegram_manager() {
+    # 定义服务名称
+    local MON_SVC="mmp-monitor"
+    local LIS_SVC="mmp-listener"
+
     while true; do
-        clear; echo -e "${YELLOW}=== 🤖 Telegram 机器人管理 ===${NC}"
+        clear; echo -e "${YELLOW}=== 🤖 Telegram 机器人管理 (Systemd 版) ===${NC}"
+        
+        # 加载配置
         if [ -f "$TG_CONF" ]; then source "$TG_CONF"; fi
-        if [ -f "$MONITOR_PID" ] && kill -0 $(cat "$MONITOR_PID") 2>/dev/null; then M_STAT="${GREEN}运行中${NC}"; else M_STAT="${RED}未启动${NC}"; fi
-        if [ -f "$LISTENER_PID" ] && kill -0 $(cat "$LISTENER_PID") 2>/dev/null; then L_STAT="${GREEN}运行中${NC}"; else L_STAT="${RED}未启动${NC}"; fi
+        
+        # 检查服务状态
+        if systemctl is-active --quiet "$MON_SVC"; then M_STAT="${GREEN}● 运行中 (自启)${NC}"; else M_STAT="${RED}● 已停止${NC}"; fi
+        if systemctl is-active --quiet "$LIS_SVC"; then L_STAT="${GREEN}● 运行中 (自启)${NC}"; else L_STAT="${RED}● 已停止${NC}"; fi
         
         echo -e "配置: Token=${TG_BOT_TOKEN:0:5}*** | ChatID=$TG_CHAT_ID"
-        echo -e "守护进程: $M_STAT | 监听进程: $L_STAT"
+        echo -e "守护进程: $M_STAT"
+        echo -e "指令监听: $L_STAT"
         echo "--------------------------"
         echo " 1. 配置 Token 和 ChatID"
         echo " 2. 启动/重启 资源报警 (守护进程)"
         echo " 3. 启动/重启 指令监听 (交互模式)"
-        echo " 4. 停止所有后台进程"
+        echo " 4. 停止所有服务"
         echo " 5. 发送测试消息"
+        echo " 6. 查看运行日志"
         echo " 0. 返回上一级"
         echo "--------------------------"
-        read -p "请输入选项 [0-5]: " t
+        read -p "请输入选项 [0-6]: " t
         case $t in
             0) return;;
-            1) read -p "Token: " tk; echo "TG_BOT_TOKEN=\"$tk\"" > "$TG_CONF"; read -p "ChatID: " ci; echo "TG_CHAT_ID=\"$ci\"" >> "$TG_CONF"; echo "已保存"; pause_prompt;;
-            2) generate_monitor_script; [ -f "$MONITOR_PID" ] && kill $(cat "$MONITOR_PID") 2>/dev/null; nohup "$MONITOR_SCRIPT" >/dev/null 2>&1 & echo $! > "$MONITOR_PID"; send_tg_msg "✅ 资源报警已启动"; echo "已启动"; pause_prompt;;
-            3) check_dependencies; generate_listener_script; [ -f "$LISTENER_PID" ] && kill $(cat "$LISTENER_PID") 2>/dev/null; nohup "$LISTENER_SCRIPT" >/dev/null 2>&1 & echo $! > "$LISTENER_PID"; send_tg_msg "✅ 指令监听已启动"; echo "已启动，请发送 /status"; pause_prompt;;
-            4) [ -f "$MONITOR_PID" ] && kill $(cat "$MONITOR_PID") 2>/dev/null && rm "$MONITOR_PID"; [ -f "$LISTENER_PID" ] && kill $(cat "$LISTENER_PID") 2>/dev/null && rm "$LISTENER_PID"; echo "已停止"; pause_prompt;;
-            5) send_tg_msg "🔔 测试消息 OK"; echo "已发送"; pause_prompt;;
+            
+            1) 
+                read -p "Token: " tk; echo "TG_BOT_TOKEN=\"$tk\"" > "$TG_CONF"
+                read -p "ChatID: " ci; echo "TG_CHAT_ID=\"$ci\"" >> "$TG_CONF"
+                echo "已保存"; pause_prompt;;
+            
+            2) 
+                # 1. 生成脚本文件
+                generate_monitor_script
+                # 2. 注册为 Systemd 服务 (实现开机自启)
+                create_systemd_service "$MON_SVC" "$MONITOR_SCRIPT" "MMP Resource Monitor"
+                send_tg_msg "✅ 资源报警服务已启动 (Systemd)"
+                pause_prompt;;
+            
+            3) 
+                # 1. 检查依赖 & 生成脚本
+                check_dependencies
+                generate_listener_script
+                # 2. 注册为 Systemd 服务
+                create_systemd_service "$LIS_SVC" "$LISTENER_SCRIPT" "MMP Bot Listener"
+                send_tg_msg "✅ 指令监听服务已启动 (Systemd)"
+                pause_prompt;;
+            
+            4) 
+                echo -e "${YELLOW}正在停止服务...${NC}"
+                systemctl stop "$MON_SVC" 2>/dev/null
+                systemctl disable "$MON_SVC" 2>/dev/null
+                systemctl stop "$LIS_SVC" 2>/dev/null
+                systemctl disable "$LIS_SVC" 2>/dev/null
+                # 清理旧的 PID 文件 (如果存在)
+                rm -f "$MONITOR_PID" "$LISTENER_PID"
+                echo -e "${GREEN}✔ 所有后台服务已停止并取消自启${NC}"
+                pause_prompt;;
+            
+            5) 
+                send_tg_msg "🔔 测试消息 OK"; echo "已发送"; pause_prompt;;
+            
+            6)
+                echo -e "${CYAN}=== 资源监控日志 ===${NC}"
+                journalctl -u "$MON_SVC" -n 10 --no-pager
+                echo -e "\n${CYAN}=== 指令监听日志 ===${NC}"
+                journalctl -u "$LIS_SVC" -n 10 --no-pager
+                pause_prompt;;
         esac
     done
 }
@@ -2451,9 +2567,10 @@ function system_optimizer() {
         echo " 1. 开启/设置 虚拟内存 (Swap) - 防止内存不足崩溃"
         echo " 2. 开启 TCP BBR 加速 - 优化网络连接速度"
         echo " 3. 系统网络测速 (Speedtest)"
+        echo " 4. 自启检测
         echo " 0. 返回"
         echo "------------------------------------------------"
-        read -p "请选择 [0-3]: " o
+        read -p "请选择 [0-4]: " o
         
         case $o in
             0) return;;
@@ -2499,8 +2616,88 @@ function system_optimizer() {
                 # 使用 Docker 运行测速，免去安装依赖
                 docker run --rm --net=host gists/speedtest-cli
                 pause_prompt;;
+            4) check_boot_status;;
         esac
     done
+}
+
+function check_boot_status() {
+    clear
+    echo -e "${YELLOW}=== 🔌 开机自启状态深度检测 ===${NC}"
+    echo -e "检测原理：检查各服务的 Systemd 配置及 Docker 重启策略。"
+    echo "------------------------------------------------"
+
+    # 1. 检测 Docker 主程序
+    echo -n "1. Docker 守护进程: "
+    if systemctl is-enabled docker >/dev/null 2>&1; then
+        echo -e "${GREEN}✔ 已设置自启${NC}"
+    else
+        echo -e "${RED}❌ 未设置 (重启后网站将无法启动)${NC}"
+        echo -e "   └─ 修复: systemctl enable docker"
+    fi
+
+    # 2. 检测 核心网关 (Nginx Proxy)
+    echo -n "2. 核心网关容器:    "
+    # 检查 gateway 目录下 docker-compose.yml 是否包含 restart: always
+    if [ -f "$GATEWAY_DIR/docker-compose.yml" ]; then
+        if grep -q "restart: always" "$GATEWAY_DIR/docker-compose.yml"; then
+            echo -e "${GREEN}✔ 策略正确 (restart: always)${NC}"
+        else
+            echo -e "${RED}⚠️  策略缺失${NC} (建议执行 [99] 重建网关)"
+        fi
+    else
+        echo -e "${YELLOW}❓ 未安装网关${NC}"
+    fi
+
+    # 3. 检测 Telegram 监控服务 (Systemd)
+    echo -n "3. TG 资源监控服务: "
+    if [ -f "/etc/systemd/system/mmp-monitor.service" ]; then
+        if systemctl is-enabled mmp-monitor >/dev/null 2>&1; then
+            echo -e "${GREEN}✔ 已设置自启 (Systemd)${NC}"
+        else
+            echo -e "${RED}❌ 已安装但未自启${NC}"
+            echo -e "   └─ 修复: systemctl enable mmp-monitor"
+        fi
+    else
+        echo -e "${YELLOW}⚪ 未安装/未配置${NC}"
+    fi
+
+    echo -n "4. TG 指令监听服务: "
+    if [ -f "/etc/systemd/system/mmp-listener.service" ]; then
+        if systemctl is-enabled mmp-listener >/dev/null 2>&1; then
+            echo -e "${GREEN}✔ 已设置自启 (Systemd)${NC}"
+        else
+            echo -e "${RED}❌ 已安装但未自启${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚪ 未安装/未配置${NC}"
+    fi
+
+    # 4. 检测 Swap 挂载
+    echo -n "5. Swap 虚拟内存:   "
+    if grep -q "swap" /etc/fstab; then
+        echo -e "${GREEN}✔ 已配置 fstab (重启自动挂载)${NC}"
+    elif free | grep -q Swap; then
+        echo -e "${YELLOW}⚠️  当前已开启，但未写入 fstab (重启后会丢失)${NC}"
+    else
+        echo -e "${YELLOW}⚪ 未启用${NC}"
+    fi
+
+    # 5. 防火墙
+    echo -n "6. 防火墙服务:      "
+    if command -v ufw >/dev/null && systemctl is-enabled ufw >/dev/null 2>&1; then
+         echo -e "${GREEN}✔ UFW 已自启${NC}"
+    elif command -v firewalld >/dev/null && systemctl is-enabled firewalld >/dev/null 2>&1; then
+         echo -e "${GREEN}✔ Firewalld 已自启${NC}"
+    else
+         echo -e "${YELLOW}⚠️  防火墙未设置开机自启${NC}"
+    fi
+
+    echo "------------------------------------------------"
+    echo -e "${CYAN}结论说明：${NC}"
+    echo -e "只要前两项 (Docker & 网关) 为 ${GREEN}✔${NC}，你的网站在重启后就能自动恢复。"
+    echo -e "如果第 3,4 项为 ${GREEN}✔${NC}，你的监控报警在重启后也会自动运行。"
+    pause_prompt
 }
 
 function db_admin_tool() {
@@ -2574,7 +2771,7 @@ function show_menu() {
     echo -e " 12. 删除指定站点              13. 更新应用/站点"
     echo -e " 14. 流量统计 (GoAccess)       15. 组件版本升降级"
     echo -e " 16. 更换网站域名              17. 系统清理 (证书/垃圾)"
-    echo -e " 18. 管理站点备注              19. 系统优化 (Swap/BBR)"
+    echo -e " 18. 管理站点备注              19. 自启检测和 (Swap/BBR)"
     
     echo ""
     
