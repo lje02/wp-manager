@@ -74,10 +74,10 @@
     "name": "Gitea",
     "description": "极速、轻量的自建 Git 代码托管平台"
   },
-  {
-    "key": "lychee",
-    "name": "Lychee Photo",
-    "description": "美观、易用的自托管照片管理系统"
+    {
+    "key": "gitea",
+    "name": "Gitea",
+    "description": "极速、轻量的自建 Git 代码托管平台"
   }
 
 ]
