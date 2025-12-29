@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.3.1 (快捷方式: mmp)"
+VERSION="V9.3.2 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -2555,19 +2555,28 @@ function system_optimizer() {
     while true; do
         clear
         echo -e "${YELLOW}=== 🚀 系统性能调优箱 ===${NC}"
+        
         # 检查 Swap 状态
         swap_total=$(free -m | grep Swap | awk '{print $2}')
-        if [ "$swap_total" -eq 0 ]; then swap_status="${RED}未开启${NC}"; else swap_status="${GREEN}已开启 (${swap_total}MB)${NC}"; fi
+        if [ "$swap_total" -eq 0 ]; then 
+            swap_status="${RED}未开启${NC}"
+        else 
+            swap_status="${GREEN}已开启 (${swap_total}MB)${NC}"
+        fi
         
         # 检查 BBR 状态
-        if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then bbr_status="${GREEN}已开启${NC}"; else bbr_status="${YELLOW}未开启${NC}"; fi
+        if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then 
+            bbr_status="${GREEN}已开启${NC}"
+        else 
+            bbr_status="${YELLOW}未开启${NC}"
+        fi
 
         echo -e "当前 Swap: $swap_status | BBR: $bbr_status"
         echo "------------------------------------------------"
         echo " 1. 开启/设置 虚拟内存 (Swap) - 防止内存不足崩溃"
         echo " 2. 开启 TCP BBR 加速 - 优化网络连接速度"
         echo " 3. 系统网络测速 (Speedtest)"
-        echo " 4. 自启检测
+        echo " 4. 自启检测"  # <--- 已修复：补全了双引号
         echo " 0. 返回"
         echo "------------------------------------------------"
         read -p "请选择 [0-4]: " o
@@ -2607,7 +2616,11 @@ function system_optimizer() {
                     echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
                 fi
                 sysctl -p
-                if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then echo -e "${GREEN}✔ BBR 启动成功${NC}"; else echo -e "${RED}❌ 启动失败，可能内核版本太低${NC}"; fi
+                if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then 
+                    echo -e "${GREEN}✔ BBR 启动成功${NC}"
+                else 
+                    echo -e "${RED}❌ 启动失败，可能内核版本太低${NC}"
+                fi
                 pause_prompt;;
                 
             3)
@@ -2616,7 +2629,10 @@ function system_optimizer() {
                 # 使用 Docker 运行测速，免去安装依赖
                 docker run --rm --net=host gists/speedtest-cli
                 pause_prompt;;
-            4) check_boot_status;;
+            
+            4) 
+                # 调用检测函数
+                check_boot_status;;
         esac
     done
 }
@@ -2638,7 +2654,6 @@ function check_boot_status() {
 
     # 2. 检测 核心网关 (Nginx Proxy)
     echo -n "2. 核心网关容器:    "
-    # 检查 gateway 目录下 docker-compose.yml 是否包含 restart: always
     if [ -f "$GATEWAY_DIR/docker-compose.yml" ]; then
         if grep -q "restart: always" "$GATEWAY_DIR/docker-compose.yml"; then
             echo -e "${GREEN}✔ 策略正确 (restart: always)${NC}"
@@ -2649,7 +2664,7 @@ function check_boot_status() {
         echo -e "${YELLOW}❓ 未安装网关${NC}"
     fi
 
-    # 3. 检测 Telegram 监控服务 (Systemd)
+    # 3. 检测 Telegram 监控服务
     echo -n "3. TG 资源监控服务: "
     if [ -f "/etc/systemd/system/mmp-monitor.service" ]; then
         if systemctl is-enabled mmp-monitor >/dev/null 2>&1; then
@@ -2662,19 +2677,8 @@ function check_boot_status() {
         echo -e "${YELLOW}⚪ 未安装/未配置${NC}"
     fi
 
-    echo -n "4. TG 指令监听服务: "
-    if [ -f "/etc/systemd/system/mmp-listener.service" ]; then
-        if systemctl is-enabled mmp-listener >/dev/null 2>&1; then
-            echo -e "${GREEN}✔ 已设置自启 (Systemd)${NC}"
-        else
-            echo -e "${RED}❌ 已安装但未自启${NC}"
-        fi
-    else
-        echo -e "${YELLOW}⚪ 未安装/未配置${NC}"
-    fi
-
     # 4. 检测 Swap 挂载
-    echo -n "5. Swap 虚拟内存:   "
+    echo -n "4. Swap 虚拟内存:   "
     if grep -q "swap" /etc/fstab; then
         echo -e "${GREEN}✔ 已配置 fstab (重启自动挂载)${NC}"
     elif free | grep -q Swap; then
@@ -2683,20 +2687,9 @@ function check_boot_status() {
         echo -e "${YELLOW}⚪ 未启用${NC}"
     fi
 
-    # 5. 防火墙
-    echo -n "6. 防火墙服务:      "
-    if command -v ufw >/dev/null && systemctl is-enabled ufw >/dev/null 2>&1; then
-         echo -e "${GREEN}✔ UFW 已自启${NC}"
-    elif command -v firewalld >/dev/null && systemctl is-enabled firewalld >/dev/null 2>&1; then
-         echo -e "${GREEN}✔ Firewalld 已自启${NC}"
-    else
-         echo -e "${YELLOW}⚠️  防火墙未设置开机自启${NC}"
-    fi
-
     echo "------------------------------------------------"
     echo -e "${CYAN}结论说明：${NC}"
-    echo -e "只要前两项 (Docker & 网关) 为 ${GREEN}✔${NC}，你的网站在重启后就能自动恢复。"
-    echo -e "如果第 3,4 项为 ${GREEN}✔${NC}，你的监控报警在重启后也会自动运行。"
+    echo -e "只要前两项 (Docker & 网关) 为 ${GREEN}✔${NC}，网站重启后即可自动恢复。"
     pause_prompt
 }
 
