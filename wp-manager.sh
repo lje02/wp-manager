@@ -31,6 +31,13 @@ CYAN='\033[0;36m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# [新增] 强制 Root 身份检查
+if [ "$(id -u)" != "0" ]; then
+    echo -e "${RED}❌ 错误: 此脚本必须使用 Root 权限运行。${NC}"
+    echo -e "请尝试输入: ${GREEN}sudo -i${NC} 切换用户后重试。"
+    exit 1
+fi
+
 # 初始化目录
 mkdir -p "$SITES_DIR" "$GATEWAY_DIR" "$FW_DIR" "$LOG_DIR"
 touch "$FW_DIR/access.conf" "$FW_DIR/geo.conf"
@@ -78,32 +85,48 @@ function configure_rclone() {
 }
 
 function check_dependencies() {
-    # 1. 检查 jq
-    if ! command -v jq >/dev/null 2>&1; then
-        echo -e "${YELLOW}>>> 正在安装依赖组件 (jq)...${NC}"
-        if [ -f /etc/debian_version ]; then apt-get update && apt-get install -y jq; else yum install -y jq; fi
-    fi
-    
-    # 2. 检查 openssl
-    if ! command -v openssl >/dev/null 2>&1; then
-        echo -e "${YELLOW}>>> 正在安装依赖组件 (openssl)...${NC}"
-        if [ -f /etc/debian_version ]; then apt-get install -y openssl; else yum install -y openssl; fi
-    fi
-    
-    # 3. 检查 net-tools
-    if ! command -v netstat >/dev/null 2>&1; then
-        echo -e "${YELLOW}>>> 正在安装网络工具 (net-tools)...${NC}"
-        if [ -f /etc/debian_version ]; then apt-get install -y net-tools; else yum install -y net-tools; fi
+    echo -e "${YELLOW}>>> 正在检查系统环境...${NC}"
+
+    # [新增] 1. 解决新机器 apt 锁被占用问题 (Debian/Ubuntu)
+    if [ -f /etc/debian_version ]; then
+        if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+            echo -e "${YELLOW}⚠️  检测到系统后台正在更新，尝试释放锁...${NC}"
+            killall apt apt-get 2>/dev/null
+            rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
+        fi
     fi
 
-    # 4. [修改] Docker 智能检测与安装
+    # [新增] 2. 优先安装 curl (这是后续安装 Docker 的基础)
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${YELLOW}>>> 正在安装基础工具 (curl)...${NC}"
+        if [ -f /etc/debian_version ]; then 
+            apt-get update -y && apt-get install -y curl
+        else 
+            yum install -y curl
+        fi
+    fi
+
+    # 3. 检查其他依赖 (jq, openssl, net-tools)
+    local deps=("jq" "openssl" "netstat:net-tools") # 格式: 命令:包名
+    for dep in "${deps[@]}"; do
+        cmd="${dep%%:*}"  # 取冒号前
+        pkg="${dep##*:}"  # 取冒号后
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            echo -e "${YELLOW}>>> 正在安装依赖组件 ($pkg)...${NC}"
+            if [ -f /etc/debian_version ]; then 
+                apt-get install -y "$pkg"
+            else 
+                yum install -y "$pkg"
+            fi
+        fi
+    done
+
+    # 4. Docker 智能检测与安装
     if command -v docker >/dev/null 2>&1; then
         # --- 情况 A: Docker 已存在 ---
         local d_ver=$(docker -v | awk '{print $3}' | tr -d ',')
         echo -e "${GREEN}✔ 检测到 Docker 已安装 (版本: $d_ver)${NC}"
-        echo -e "${GREEN}  └─ 跳过 Docker 安装步骤${NC}"
         
-        # 额外检查: 确保服务是启动的
         if ! systemctl is-active docker >/dev/null 2>&1; then
             echo -e "${YELLOW}  └─ 服务未运行，正在启动 Docker...${NC}"
             systemctl start docker
@@ -111,14 +134,21 @@ function check_dependencies() {
     else
         # --- 情况 B: Docker 不存在 ---
         echo -e "${YELLOW}>>> 未检测到 Docker，正在自动安装...${NC}"
-        curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
-        systemctl enable docker && systemctl start docker
-        write_log "Installed Docker"
+        
+        # [优化] 这里已经确保了 curl 存在，并且增加了国内源判断
+        if curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun; then
+            systemctl enable docker && systemctl start docker
+            write_log "Installed Docker"
+            echo -e "${GREEN}✔ Docker 安装成功${NC}"
+        else
+            echo -e "${RED}❌ Docker 安装失败，请检查网络或更换系统镜像。${NC}"
+            exit 1
+        fi
     fi
 
-    # 5. [新增] 检查 Docker Compose 插件是否可用
+    # 5. 检查 Docker Compose 插件
     if ! docker compose version >/dev/null 2>&1; then
-        echo -e "${YELLOW}⚠️  检测到 Docker Compose 插件缺失 (你需要 V2 版本)${NC}"
+        echo -e "${YELLOW}⚠️  检测到 Docker Compose 插件缺失${NC}"
         echo -e "${YELLOW}>>> 正在补全 Docker Compose 插件...${NC}"
         if [ -f /etc/debian_version ]; then 
             apt-get update && apt-get install -y docker-compose-plugin
@@ -127,6 +157,7 @@ function check_dependencies() {
         fi
     fi
 }
+
 # [补全] 容器冲突检测函数
 function check_container_conflict() {
     local base_name=$1
@@ -2893,4 +2924,5 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
+
 
