@@ -426,23 +426,36 @@ function ssh_key_manager() {
     SSHD_CONFIG="/etc/ssh/sshd_config"
     SSHD_BACKUP="/etc/ssh/sshd_config.bak"
     
-    # --- 内部函数：安全重启 SSH ---
+    # --- [修正] 内部函数：智能安全重启 SSH ---
     function safe_restart_ssh() {
         echo -e "${YELLOW}>>> 正在进行配置安全检查 (sshd -t)...${NC}"
         
-        # 尝试寻找 sshd 二进制文件路径 (兼容不同发行版)
+        # 1. 寻找 sshd 二进制文件 (兼容不同系统路径)
         SSHD_BIN=$(command -v sshd || echo "/usr/sbin/sshd")
         
+        # 2. 检查语法
         if $SSHD_BIN -t -f "$SSHD_CONFIG"; then
             echo -e "${GREEN}✔ 配置文件语法正确。${NC}"
             
+            # 3. 智能判定服务名称 (ssh vs sshd)
             if command -v systemctl >/dev/null; then
-                systemctl restart sshd
+                # 尝试检测 sshd 服务是否存在
+                if systemctl list-unit-files | grep -q "^sshd.service"; then
+                    SVC_NAME="sshd"
+                else
+                    SVC_NAME="ssh"
+                fi
+                
+                echo -e "${YELLOW}>>> 正在重启服务 ($SVC_NAME)...${NC}"
+                systemctl restart "$SVC_NAME"
             else
-                service ssh restart
+                # 非 Systemd 系统 (如部分 Docker 容器或老系统)
+                service ssh restart 2>/dev/null || service sshd restart
             fi
+            
             echo -e "${GREEN}✔ SSH 服务已重启生效。${NC}"
         else
+            # 4. 语法错误处理：自动回滚
             echo -e "${RED}❌ 严重错误：配置文件语法检查失败！${NC}"
             echo -e "${RED}❌ 系统拒绝重启 SSH 服务，以防止失联。${NC}"
             echo -e "${YELLOW}>>> 正在回滚配置文件...${NC}"
@@ -503,11 +516,8 @@ function ssh_key_manager() {
                 if ! grep -q "^PubkeyAuthentication yes" $SSHD_CONFIG; then
                     echo -e "${YELLOW}>>> 检测到需开启 PubkeyAuthentication，正在修改配置...${NC}"
                     cp "$SSHD_CONFIG" "$SSHD_BACKUP" # 备份
-                    
                     sed -i '/^#\?PubkeyAuthentication/d' $SSHD_CONFIG
                     echo "PubkeyAuthentication yes" >> $SSHD_CONFIG
-                    
-                    # 执行安全重启
                     safe_restart_ssh
                 fi
                 
@@ -522,8 +532,6 @@ function ssh_key_manager() {
                 echo ""
                 echo -e "${RED}====================================================${NC}"
                 echo -e "${GREEN}✔ 公钥已自动部署到服务器。${NC}"
-                
-                # 5. 清理私钥文件 (安全起见，不留在服务器上)
                 rm -f "$TEMP_KEY" "$TEMP_KEY.pub"
                 
                 echo -e "${YELLOW}提示: 请现在打开一个新的终端窗口，使用刚才的密钥尝试连接服务器。${NC}"
@@ -547,9 +555,7 @@ function ssh_key_manager() {
                     # 确保 ChallengeResponseAuthentication 也是关闭的
                     sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/g' $SSHD_CONFIG
                     
-                    # 执行安全重启
                     safe_restart_ssh
-                    
                     echo -e "${GREEN}✔ 策略已应用。${NC}"
                 else
                     echo "操作已取消。"
@@ -560,12 +566,8 @@ function ssh_key_manager() {
             3)
                 echo -e "${YELLOW}>>> 正在恢复密码登录功能...${NC}"
                 cp "$SSHD_CONFIG" "$SSHD_BACKUP" # 备份
-                
                 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' $SSHD_CONFIG
-                
-                # 执行安全重启
                 safe_restart_ssh
-                
                 echo -e "${GREEN}✔ 策略已应用。${NC}"
                 pause_prompt
                 ;;
