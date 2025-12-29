@@ -1,0 +1,60 @@
+services:
+  # 数据库服务
+  db:
+    image: mariadb:10.6
+    container_name: {{APP_NAME}}_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: lycheepassword
+      MYSQL_DATABASE: lychee
+      MYSQL_USER: lychee
+      MYSQL_PASSWORD: lycheepassword
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - default
+
+  # Lychee 主应用
+  app:
+    image: lycheeorg/lychee
+    container_name: {{APP_NAME}}_app
+    restart: always
+    volumes:
+      - conf:/conf
+      - uploads:/uploads
+      - sym:/sym
+    environment:
+      # 数据库连接
+      DB_CONNECTION: mysql
+      DB_HOST: db
+      DB_USERNAME: lychee
+      DB_PASSWORD: lycheepassword
+      DB_DATABASE: lychee
+      
+      # Nginx Proxy 自动反代配置
+      VIRTUAL_HOST: {{DOMAIN}}
+      LETSENCRYPT_HOST: {{DOMAIN}}
+      LETSENCRYPT_EMAIL: {{EMAIL}}
+      
+      # PHP 上传限制优化 (防止上传大图失败)
+      PHP_UPLOAD_MAX_FILESIZE: 512M
+      PHP_POST_MAX_SIZE: 512M
+      PHP_MEMORY_LIMIT: 512M
+      
+      # 时区
+      TZ: Asia/Shanghai
+    networks:
+      - default
+      - proxy-net
+    depends_on:
+      - db
+
+volumes:
+  conf:
+  uploads:
+  sym:
+  db_data:
+
+networks:
+  proxy-net:
+    external: true
