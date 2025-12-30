@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.3.3 (快捷方式: mmp)"
+VERSION="V9.6 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -2018,14 +2018,22 @@ EOF
 }
 
 function create_redirect() { 
-    read -p "Src Domain: " s
-    read -p "Target URL: " t; t=$(normalize_url "$t")
+    read -p "已解析到本机域名: " s
+    read -p "跳转域名 URL: " t; t=$(normalize_url "$t")
     read -p "Email: " e
     sdir="$SITES_DIR/$s"; mkdir -p "$sdir"
     
-    echo "server { listen 80; server_name localhost; location / { return 301 $t\$request_uri; } }" > "$sdir/redirect.conf"
+       # 使用 cat EOF 写入，避免单行 echo 的引号混乱和自动纠错风险
+    cat > "$sdir/redirect.conf" <<EOF
+server {
+    listen 80;
+    server_name localhost;
+    location / {
+        return 301 $t\$request_uri;
+    }
+}
+EOF
     
-    # 修复：改用多行 YAML 格式
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
   redirector:
@@ -2987,6 +2995,4 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
-
-
 
