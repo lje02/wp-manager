@@ -2900,8 +2900,8 @@ function show_menu() {
     
     # --- 1. 部署中心 ---
     echo -e "${YELLOW}[🚀 部署中心]${NC}"
-    echo -e " 1. 部署 WordPress             2. 部署 反向代理"
-    echo -e " 3. 部署 301 重定向            4. ${GREEN}应用商店 (App Store)${NC}"
+    echo -e " 1. 新建 WordPress             2. 新建 反向代理"
+    echo -e " 3. 新建 301 重定向            4. ${GREEN}应用商店 (App Store)${NC}"
     
     echo "" 
     
@@ -2911,7 +2911,7 @@ function show_menu() {
     echo -e " 12. 删除指定站点              13. 更新应用/站点"
     echo -e " 14. 流量统计 (GoAccess)       15. 组件版本升降级"
     echo -e " 16. 更换网站域名              17. 系统清理 (证书/垃圾)"
-    echo -e " 18. 管理站点备注              19. 自启检测和 (Swap/BBR)"
+    echo -e " 18. 管理站点备注              19. 自启检测/ip优先/Swap/BBR"
     
     echo ""
     
