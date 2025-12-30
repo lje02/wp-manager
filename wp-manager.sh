@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.3.2 (快捷方式: mmp)"
+VERSION="V9.3.3 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -2624,6 +2624,77 @@ function uninstall_cluster() {
     fi
 }
 
+function net_protocol_manager() {
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🌐 IPv4/IPv6 协议偏好设置 ===${NC}"
+        
+        # 检查 IPv6 状态
+        if sysctl net.ipv6.conf.all.disable_ipv6 2>/dev/null | grep -q "1"; then
+            v6_status="${RED}已禁用${NC}"
+        else
+            v6_status="${GREEN}已开启${NC}"
+        fi
+
+        # 检查 IPv4 优先级 (检测 /etc/gai.conf)
+        if grep -q "^precedence ::ffff:0:0/96  100" /etc/gai.conf 2>/dev/null; then
+            prio_status="${GREEN}IPv4 优先${NC}"
+        else
+            prio_status="${YELLOW}默认 (通常 IPv6 优先)${NC}"
+        fi
+
+        echo -e "当前状态: IPv6 [$v6_status] | 优先级 [$prio_status]"
+        echo "------------------------------------------------"
+        echo " 1. 优先使用 IPv4 (推荐: 解决 GitHub/Docker 拉取慢)"
+        echo " 2. 彻底禁用 IPv6 (解决老旧应用兼容性问题)"
+        echo " 3. 恢复默认设置 (开启 IPv6 且系统自动选择)"
+        echo " 0. 返回"
+        echo "------------------------------------------------"
+        read -p "请选择 [0-3]: " o
+
+        case $o in
+            0) return;;
+            
+            1)
+                echo -e "${YELLOW}>>> 正在设置 IPv4 优先...${NC}"
+                # 修改 /etc/gai.conf
+                sed -i '/^precedence ::ffff:0:0\/96  100/d' /etc/gai.conf 2>/dev/null
+                echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
+                echo -e "${GREEN}✔ 设置成功！DNS 解析将优先返回 IPv4 地址。${NC}"
+                pause_prompt;;
+            
+            2)
+                echo -e "${YELLOW}>>> 正在禁用 IPv6...${NC}"
+                # 写入 sysctl配置
+                if ! grep -q "net.ipv6.conf.all.disable_ipv6" /etc/sysctl.conf; then
+                    echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+                    echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
+                    echo "net.ipv6.conf.lo.disable_ipv6 = 1" >> /etc/sysctl.conf
+                else
+                    sed -i 's/net.ipv6.conf.all.disable_ipv6.*/net.ipv6.conf.all.disable_ipv6 = 1/g' /etc/sysctl.conf
+                    sed -i 's/net.ipv6.conf.default.disable_ipv6.*/net.ipv6.conf.default.disable_ipv6 = 1/g' /etc/sysctl.conf
+                fi
+                sysctl -p >/dev/null 2>&1
+                echo -e "${GREEN}✔ IPv6 已禁用。${NC}"
+                pause_prompt;;
+            
+            3)
+                echo -e "${YELLOW}>>> 正在恢复默认设置...${NC}"
+                # 恢复 gai.conf
+                sed -i '/^precedence ::ffff:0:0\/96  100/d' /etc/gai.conf 2>/dev/null
+                # 恢复 sysctl
+                sed -i '/net.ipv6.conf.all.disable_ipv6/d' /etc/sysctl.conf
+                sed -i '/net.ipv6.conf.default.disable_ipv6/d' /etc/sysctl.conf
+                sed -i '/net.ipv6.conf.lo.disable_ipv6/d' /etc/sysctl.conf
+                # 临时开启
+                sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1
+                sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1
+                echo -e "${GREEN}✔ 已恢复默认设置 (IPv6 开启)。${NC}"
+                pause_prompt;;
+        esac
+    done
+}
+
 function system_optimizer() {
     while true; do
         clear
@@ -2649,10 +2720,11 @@ function system_optimizer() {
         echo " 1. 开启/设置 虚拟内存 (Swap) - 防止内存不足崩溃"
         echo " 2. 开启 TCP BBR 加速 - 优化网络连接速度"
         echo " 3. 系统网络测速 (Speedtest)"
-        echo " 4. 自启检测"  # <--- 已修复：补全了双引号
+        echo " 4. 自启检测 (检查 Docker/网关 重启策略)"
+        echo -e " 5. ${CYAN}IPv4/IPv6 协议偏好设置${NC} "
         echo " 0. 返回"
         echo "------------------------------------------------"
-        read -p "请选择 [0-4]: " o
+        read -p "请选择 [0-5]: " o
         
         case $o in
             0) return;;
@@ -2699,13 +2771,15 @@ function system_optimizer() {
             3)
                 check_dependencies
                 echo -e "${YELLOW}>>> 正在安装 Speedtest CLI...${NC}"
-                # 使用 Docker 运行测速，免去安装依赖
                 docker run --rm --net=host gists/speedtest-cli
                 pause_prompt;;
             
             4) 
-                # 调用检测函数
                 check_boot_status;;
+            
+            5)
+                # 调用新写的协议管理函数
+                net_protocol_manager;;
         esac
     done
 }
