@@ -2617,27 +2617,39 @@ function uninstall_cluster() {
     fi
 }
 
-# === 新增功能：网络自动修复 (启动时运行) ===
+# ================= 网络自动修复模块 (IPv4 激进模式) =================
 function check_and_fix_network() {
-    echo -e "${YELLOW}>>> [自愈] 正在检查网络连通性...${NC}"
+    echo -e "${YELLOW}>>> [自愈] 正在优化网络连接...${NC}"
     local test_domain="github.com"
     
-    # 1. 检查当前优先级设置
+    # 1. 检查是否已经配置过
     if grep -q "^precedence ::ffff:0:0/96  100" /etc/gai.conf 2>/dev/null; then
         echo -e " - 网络偏好: ${GREEN}IPv4 优先 (已配置)${NC}"
+        # 即使配置过，也可以顺手测一下 IPv4 通不通
+        if curl -4 -s --connect-timeout 3 "https://$test_domain" >/dev/null; then
+             echo -e " - IPv4 连通性: ${GREEN}正常${NC}"
+        fi
         return
     fi
 
-    # 2. 如果未配置，测试默认连接速度 (3秒超时)
-    echo -e " - 网络偏好: ${YELLOW}默认 (正在检测 IPv6 质量...)${NC}"
-    if ! curl -s --connect-timeout 3 "https://$test_domain" >/dev/null; then
-        echo -e "${RED}⚠️  检测到默认连接超时！${NC}"
-        echo -e "${YELLOW}>>> 正在自动切换为 IPv4 优先模式...${NC}"
+    # 2. [修改点] 直接测试 IPv4 连通性
+    echo -e " - 正在检测 IPv4 通道..."
+    
+    # 使用 -4 强制走 IPv4 测试，超时设为 5 秒
+    if curl -4 -s --connect-timeout 5 "https://$test_domain" >/dev/null; then
+        echo -e " - IPv4 连通性: ${GREEN}正常${NC}"
+        echo -e "${YELLOW}>>> 为了防止 Docker/GitHub 拉取卡顿，正在强制开启 IPv4 优先...${NC}"
+        
+        # 3. 立即应用 IPv4 优先策略 (不等待 IPv6 失败)
+        # 清理旧配置 (防止重复)
         sed -i '/^precedence ::ffff:0:0\/96  100/d' /etc/gai.conf 2>/dev/null
+        # 写入新配置
         echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
-        echo -e "${GREEN}✔ 已自动修复网络优先级。${NC}"
+        
+        echo -e "${GREEN}✔ 已设置 IPv4 优先 (不再使用 IPv6 解析)${NC}"
     else
-        echo -e " - 网络质量: ${GREEN}良好${NC}"
+        echo -e "${RED}❌ 检测到 IPv4 连接失败！${NC}"
+        echo -e "${YELLOW}⚠️  警告: 服务器可能只有 IPv6 网络，或者外网不通。跳过优化。${NC}"
     fi
 }
 
