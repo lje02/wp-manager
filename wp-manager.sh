@@ -263,7 +263,7 @@ function generate_listener_script() {
 cat > "$LISTENER_SCRIPT" <<EOF
 #!/bin/bash
 # ==========================================
-#  MMP Telegram Bot Listener V2.0 (Enhanced)
+#  MMP Robot Listener (HTML Fix Version)
 # ==========================================
 
 TG_CONF="$TG_CONF"
@@ -277,139 +277,122 @@ source "\$TG_CONF"
 
 OFFSET=0
 
-# 发送回复函数
+# --- [核心修复] 发送回复函数 (HTML模式) ---
 function reply() {
     local chat_id=\$1
     local text=\$2
-    curl -s -X POST "https://api.telegram.org/bot\$TG_BOT_TOKEN/sendMessage" \
+    
+    # 使用 --data-urlencode 自动处理换行和特殊字符
+    # 使用 HTML 模式，兼容性更好
+    result=\$(curl -s -X POST "https://api.telegram.org/bot\$TG_BOT_TOKEN/sendMessage" \
         -d chat_id="\$chat_id" \
-        -d parse_mode="Markdown" \
-        -d text="\$text" >/dev/null
+        -d parse_mode="HTML" \
+        --data-urlencode "text=\$text")
+        
+    # 简单的错误检测日志
+    if echo "\$result" | grep -q '"ok":false'; then
+        echo "❌ 发送失败: \$result"
+    fi
 }
 
-# 发送动作提示 (显示 "正在输入...")
 function send_action() {
     curl -s -X POST "https://api.telegram.org/bot\$TG_BOT_TOKEN/sendChatAction" \
         -d chat_id="\$1" \
         -d action="typing" >/dev/null
 }
 
-echo "Bot listener started..."
+echo "Bot listener started... (HTML Mode)"
 
 while true; do
-    # 长轮询获取更新 (Timeout 30s)
     updates=\$(curl -s "https://api.telegram.org/bot\$TG_BOT_TOKEN/getUpdates?offset=\$OFFSET&timeout=30")
     
-    # 检查 curl 是否成功
     if [ \$? -ne 0 ]; then sleep 5; continue; fi
-    
-    # 检查返回是否有效
     status=\$(echo "\$updates" | jq -r '.ok')
     if [ "\$status" != "true" ]; then sleep 5; continue; fi
     
-    # 检查是否有新消息
     count=\$(echo "\$updates" | jq '.result | length')
     if [ "\$count" -eq "0" ]; then continue; fi
 
-    # 循环处理每一条消息
     echo "\$updates" | jq -c '.result[]' | while read row; do
         update_id=\$(echo "\$row" | jq '.update_id')
-        
-        # 提取消息内容和发送者
         message_text=\$(echo "\$row" | jq -r '.message.text // empty')
         sender_id=\$(echo "\$row" | jq -r '.message.chat.id // empty')
-        username=\$(echo "\$row" | jq -r '.message.from.username // "Unknown"')
-
-        # --- 安全检查：只允许管理员操作 ---
+        
+        # 只响应管理员
         if [ "\$sender_id" == "\$TG_CHAT_ID" ] && [ ! -z "\$message_text" ]; then
             
-            echo "收到指令: \$message_text (from \$username)"
+            # 显示正在输入...
             send_action "\$sender_id"
 
             case "\$message_text" in
                 "/start" | "/help")
-                    msg="🤖 **MMP 运维机器人 V2.0**%0A"
-                    msg="\$msg-----------------------------%0A"
-                    msg="\$msg📊 /status - 查看系统详细状态%0A"
-                    msg="\$msg💾 /backup - 立即执行全量备份%0A"
-                    msg="\$msg🔄 /reboot_nginx - 重启核心网关%0A"
-                    msg="\$msg🚑 /restart_all - 重启所有站点容器%0A"
-                    msg="\$msg🔍 /check_ip - 检查服务器公网IP%0A"
+                    # 使用 HTML 标签 <b> </b> 进行加粗，换行直接用 \n (curl会自动处理)
+                    msg="🤖 <b>MMP 运维机器人 V2.1</b>\n"
+                    msg="\${msg}-----------------------------\n"
+                    msg="\${msg}📊 /status - 查看系统详细状态\n"
+                    msg="\${msg}💾 /backup - 立即执行全量备份\n"
+                    msg="\${msg}🔄 /reboot_nginx - 重启核心网关\n"
+                    msg="\${msg}🚑 /restart_all - 重启所有站点容器\n"
+                    msg="\${msg}🔍 /check_ip - 检查服务器公网IP\n"
                     reply "\$sender_id" "\$msg"
                     ;;
 
                 "/status")
-                    # 获取系统信息
                     load=\$(uptime | awk -F'load average:' '{print \$2}' | sed 's/,//g')
                     mem_used=\$(free -m | awk 'NR==2{print \$3}')
                     mem_total=\$(free -m | awk 'NR==2{print \$2}')
                     disk_usage=\$(df -h / | awk 'NR==2 {print \$5}')
-                    
-                    # 获取 Docker 信息
                     container_running=\$(docker ps -q | wc -l)
-                    container_total=\$(docker ps -a -q | wc -l)
                     
-                    msg="📊 **系统实时状态**%0A"
-                    msg="\$msg-----------------------------%0A"
-                    msg="\$msg🧠 负载: \`\$load\`%0A"
-                    msg="\$msg💾 内存: \${mem_used}MB / \${mem_total}MB%0A"
-                    msg="\$msg💿 硬盘: \$disk_usage 已用%0A"
-                    msg="\$msg🐳 容器: 运行 \$container_running / 总计 \$container_total%0A"
-                    msg="\$msg⏱ 运行时间: \$(uptime -p)"
+                    msg="📊 <b>系统实时状态</b>\n"
+                    msg="\${msg}-----------------------------\n"
+                    msg="\${msg}🧠 负载: <code>\$load</code>\n"
+                    msg="\${msg}💾 内存: \${mem_used}MB / \${mem_total}MB\n"
+                    msg="\${msg}💿 硬盘: \$disk_usage 已用\n"
+                    msg="\${msg}🐳 容器: 运行 \$container_running 个\n"
+                    msg="\${msg}⏱ 运行: \$(uptime -p)"
                     reply "\$sender_id" "\$msg"
                     ;;
 
                 "/reboot_nginx")
                     reply "\$sender_id" "🔄 正在平滑重载 Nginx 网关..."
                     if docker exec gateway_proxy nginx -s reload >/dev/null 2>&1; then
-                        reply "\$sender_id" "✅ 网关配置已刷新 (Reloaded)"
+                        reply "\$sender_id" "✅ 网关配置已刷新"
                     else
-                        reply "\$sender_id" "❌ 刷新失败，正在尝试强制重启..."
                         cd "\$GATEWAY_DIR" && docker compose restart nginx-proxy
-                        reply "\$sender_id" "✅ 网关已强制重启"
+                        reply "\$sender_id" "⚠️ 刷新失败，已强制重启网关"
                     fi
                     ;;
 
                 "/backup")
-                    reply "\$sender_id" "📦 **开始执行全量备份**%0A这可能需要几分钟，请耐心等待..."
-                    # 调用主脚本的备份功能 (利用 backup_all 参数)
                     if [ -f "\$MMP_CMD" ]; then
-                        # 后台执行，避免超时
                         nohup \$MMP_CMD backup_all > /dev/null 2>&1 &
-                        reply "\$sender_id" "⏳ 备份任务已在后台启动。完成后请检查日志或云端。"
+                        reply "\$sender_id" "⏳ <b>备份任务已启动</b>\n请稍后检查云端或本地目录。"
                     else
                          reply "\$sender_id" "❌ 错误: 找不到 mmp 主程序"
                     fi
                     ;;
                 
                 "/restart_all")
-                    reply "\$sender_id" "🚑 **正在重启所有容器...**"
                     docker restart \$(docker ps -q)
-                    reply "\$sender_id" "✅ 所有容器已发送重启指令。"
+                    reply "\$sender_id" "✅ 所有容器已重启。"
                     ;;
 
                 "/check_ip")
                     myip=\$(curl -s4 ifconfig.me)
-                    reply "\$sender_id" "🌐 公网 IP (IPv4): \`\$myip\`"
+                    reply "\$sender_id" "🌐 公网 IP: <code>\$myip</code>"
                     ;;
-
+                    
                 *)
-                    # 未知指令不回复，或者是通过对话方式回复
-                    reply "\$sender_id" "❓ 未知指令，输入 /help 查看菜单"
+                    # 不回复未知指令，避免刷屏
                     ;;
             esac
-        else
-            if [ "\$sender_id" != "\$TG_CHAT_ID" ]; then
-                echo "⚠️  拦截到未授权访问: ID \$sender_id (User: \$username)"
-            fi
         fi
 
-        # 更新 Offset 防止重复处理
         next_offset=\$((update_id + 1))
         echo \$next_offset > /tmp/tg_offset.txt
     done
 
-    # 读取最新的 Offset
     if [ -f /tmp/tg_offset.txt ]; then
         OFFSET=\$(cat /tmp/tg_offset.txt)
     fi
@@ -859,55 +842,56 @@ function telegram_manager() {
 }
 
 function sys_monitor() {
-    # 内部函数：绘制进度条
-    # 参数 1: 百分比 (0-100)
-    # 参数 2: 颜色代码
+    # --- 内部工具函数 ---
     function draw_bar() {
-        local pct=$1
-        local color=$2
-        local width=20
-        local num=$((pct * width / 100))
-        local bar=""
+        local pct=$1; local color=$2; local width=20; local num=$((pct * width / 100)); local bar=""
         for ((i=0; i<num; i++)); do bar="${bar}█"; done
         for ((i=num; i<width; i++)); do bar="${bar}░"; done
         echo -e "${color}[${bar}] ${pct}%${NC}"
     }
-
-    # 内部函数：字节转换
     function format_bytes() {
         local bytes=$1
-        if (( $(echo "$bytes < 1024" | bc -l 2>/dev/null || awk 'BEGIN {print ('$bytes' < 1024)}') )); then
-            echo "${bytes} B/s"
-        elif (( $(echo "$bytes < 1048576" | bc -l 2>/dev/null || awk 'BEGIN {print ('$bytes' < 1048576)}') )); then
-            echo "$(awk "BEGIN {printf \"%.1f\", $bytes/1024}") KB/s"
-        else
-            echo "$(awk "BEGIN {printf \"%.1f\", $bytes/1048576}") MB/s"
-        fi
+        if (( $(echo "$bytes < 1024" | bc -l 2>/dev/null || awk 'BEGIN {print ('$bytes' < 1024)}') )); then echo "${bytes} B/s"
+        elif (( $(echo "$bytes < 1048576" | bc -l 2>/dev/null || awk 'BEGIN {print ('$bytes' < 1048576)}') )); then echo "$(awk "BEGIN {printf \"%.1f\", $bytes/1024}") KB/s"
+        else echo "$(awk "BEGIN {printf \"%.1f\", $bytes/1048576}") MB/s"; fi
     }
 
-    # === 尝试调用 btop (如果已安装) ===
-    # btop 是目前最强的终端监控工具，如果不想安装，脚本会自动使用下方的原生面板
+    # === [新增] 获取当前终端尺寸 ===
+    # stty size 返回 "行数 列数" (Rows Cols)
+    read rows cols < <(stty size 2>/dev/null || echo "24 80")
+
+    # === Level 1: 智能启动 btop ===
+    # 只有当安装了 btop 且 窗口足够大 (宽>=80, 高>=24) 时才启动
     if command -v btop >/dev/null 2>&1; then
-        btop
+        if [ "$cols" -ge 80 ] && [ "$rows" -ge 24 ]; then
+            btop
+            return
+        else
+            # 如果装了 btop 但窗口太小，给个提示
+            echo -e "${YELLOW}提示: 窗口太小 (${cols}x${rows})，无法启动 btop (需 80x24)。${NC}"
+            echo -e "正在切换至轻量级模式..."
+            sleep 2
+        fi
+    fi
+
+    # === Level 2: 尝试调用 htop (自适应能力强) ===
+    if command -v htop >/dev/null 2>&1; then
+        htop
         return
     fi
 
-    # === 原生 Bash 仪表盘 ===
-    # 获取默认网卡
+    # === Level 3: 原生 Bash 仪表盘 (保底方案) ===
     local net_interface=$(ip route | grep default | awk '{print $5}' | head -n1)
     
-    clear
-    echo -e "${YELLOW}>>> 初始化监控引擎 (按 Ctrl+C 退出)...${NC}"
+    echo -e "${YELLOW}>>> 正在启动原生面板 (按 Ctrl+C 退出)...${NC}"
+    sleep 1
     
     while true; do
-        # 1. 获取 CPU 使用率 (通过 /proc/stat 计算)
         read cpu_user1 cpu_nice1 cpu_sys1 cpu_idle1 cpu_iowait1 cpu_irq1 cpu_softirq1 cpu_steal1 < <(grep 'cpu ' /proc/stat | awk '{print $2,$3,$4,$5,$6,$7,$8,$9}')
-        # 2. 获取网络流量 (第一次读取)
         read rx1 tx1 < <(grep "$net_interface" /proc/net/dev | awk '{print $2,$10}')
         
         sleep 1
         
-        # 重新获取数据
         read cpu_user2 cpu_nice2 cpu_sys2 cpu_idle2 cpu_iowait2 cpu_irq2 cpu_softirq2 cpu_steal2 < <(grep 'cpu ' /proc/stat | awk '{print $2,$3,$4,$5,$6,$7,$8,$9}')
         read rx2 tx2 < <(grep "$net_interface" /proc/net/dev | awk '{print $2,$10}')
 
@@ -916,49 +900,35 @@ function sys_monitor() {
         cpu_total2=$((cpu_user2 + cpu_nice2 + cpu_sys2 + cpu_idle2 + cpu_iowait2 + cpu_irq2 + cpu_softirq2 + cpu_steal2))
         cpu_diff=$((cpu_total2 - cpu_total1))
         cpu_idle_diff=$((cpu_idle2 - cpu_idle1))
-        cpu_usage=$(( (cpu_diff - cpu_idle_diff) * 100 / cpu_diff ))
+        [ $cpu_diff -eq 0 ] && cpu_usage=0 || cpu_usage=$(( (cpu_diff - cpu_idle_diff) * 100 / cpu_diff ))
 
-        # 计算 内存
+        # 计算 内存 & 磁盘
         mem_total=$(free -m | awk 'NR==2{print $2}')
         mem_used=$(free -m | awk 'NR==2{print $3}')
         mem_pct=$(( mem_used * 100 / mem_total ))
-
-        # 计算 磁盘
         disk_pct=$(df -h / | awk 'NR==2 {print $5}' | tr -d '%')
 
         # 计算 网速
-        rx_rate=$((rx2 - rx1))
-        tx_rate=$((tx2 - tx1))
-        rx_fmt=$(format_bytes $rx_rate)
-        tx_fmt=$(format_bytes $tx_rate)
+        rx_rate=$((rx2 - rx1)); tx_rate=$((tx2 - tx1))
+        rx_fmt=$(format_bytes $rx_rate); tx_fmt=$(format_bytes $tx_rate)
 
         # 渲染界面
         clear
-        echo -e "${GREEN}=== 🖥️  系统实时监控面板 (V2.0) ===${NC}"
-        echo -e "主机: $(hostname) | IP: $(hostname -I | awk '{print $1}') | 运行: $(uptime -p)"
-        echo "----------------------------------------------------"
-        
-        # CPU & 内存 & 磁盘 进度条
-        echo -n "🧠 CPU 使用:  "; draw_bar $cpu_usage $CYAN
-        echo -n "💾 内存使用:  "; draw_bar $mem_pct $PURPLE
-        echo -n "💿 系统磁盘:  "; draw_bar $disk_pct $YELLOW
-        
-        echo "----------------------------------------------------"
-        # 网络状态
-        echo -e "🌐 网络接口: ${CYAN}$net_interface${NC}"
-        echo -e "⬇️  下载速度: ${GREEN}$rx_fmt${NC}"
-        echo -e "⬆️  上传速度: ${BLUE}$tx_fmt${NC}"
-        
-        echo "----------------------------------------------------"
-        # 负载
-        echo -e "⚖️  系统负载: $(uptime | awk -F'load average:' '{print $2}')"
-        echo "----------------------------------------------------"
-        # Top 3 进程
-        echo -e "🏆 资源占用 Top 3 (CPU/MEM):"
-        ps -eo pid,user,comm,%cpu,%mem --sort=-%cpu | head -n 4 | tail -n 3 | awk '{printf "   %-6s %-10s %-5s%% (CPU) %-5s%% (MEM)\n", $3, $2, $4, $5}'
-        
-        echo "----------------------------------------------------"
-        echo -e "${YELLOW}按 Ctrl+C 退出监控${NC}"
+        echo -e "${GREEN}=== 🖥️  原生极简监控 (V2.1 移动端兼容) ===${NC}"
+        echo -e "IP: $(hostname -I | awk '{print $1}') | 运行: $(uptime -p)"
+        echo "----------------------------------------" # 缩短分隔线以适应手机
+        echo -n "🧠 CPU : "; draw_bar $cpu_usage $CYAN
+        echo -n "💾 RAM : "; draw_bar $mem_pct $PURPLE
+        echo -n "💿 DISK: "; draw_bar $disk_pct $YELLOW
+        echo "----------------------------------------"
+        echo -e "⬇️  下载: ${GREEN}$rx_fmt${NC}"
+        echo -e "⬆️  上传: ${BLUE}$tx_fmt${NC}"
+        echo "----------------------------------------"
+        echo -e "🏆 Top 3: "
+        # 缩短输出格式以适应小屏幕
+        ps -eo comm,%cpu,%mem --sort=-%cpu | head -n 4 | tail -n 3 | awk '{printf "   %-10s C:%-3s%% M:%-3s%%\n", $1, $2, $3}'
+        echo "----------------------------------------"
+        echo -e "${YELLOW}提示: 横屏或拉大窗口可使用 btop${NC}"
     done
 }
 
