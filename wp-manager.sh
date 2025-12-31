@@ -121,8 +121,7 @@ function check_dependencies() {
         fi
     else
         echo -e "${YELLOW}>>> 未检测到 Docker，正在自动安装...${NC}"
-        # 使用阿里云镜像加速 (国内机器必备)
-        if curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun; then
+        if curl -fsSL https://get.docker.com | bash; then
             systemctl enable docker && systemctl start docker
             write_log "Installed Docker"
             echo -e "${GREEN}✔ Docker 安装成功${NC}"
