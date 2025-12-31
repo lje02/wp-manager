@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.2.2 (快捷方式: mmp)"
+VERSION="V10.1(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -2360,19 +2360,14 @@ server { listen 80; server_name localhost; root /var/www/html; index index.php; 
 EOF
 cd "$s" && docker compose restart nginx; echo "OK";; esac; pause_prompt; done; }
 
-# === 核心逻辑：执行单个站点备份 ===
-# 参数: $1 = 域名
+# === [V3.0 通用版] 核心备份逻辑 ===
 function perform_backup_logic() {
     local site_domain=$1
     local s_path="$SITES_DIR/$site_domain"
     
-    if [ ! -d "$s_path" ]; then
-        echo "跳过: $site_domain (目录不存在)"
-        return
-    fi
+    if [ ! -d "$s_path" ]; then echo "跳过: $site_domain"; return; fi
     
     check_rclone
-    # 检查云端配置
     local has_remote=0
     if rclone listremotes 2>/dev/null | grep -q "remote:"; then has_remote=1; fi
 
@@ -2383,113 +2378,140 @@ function perform_backup_logic() {
     echo -e "${CYAN}>>> [Backup] 正在备份: $site_domain${NC}"
     mkdir -p "$temp_dir"
 
-    # 1. 复制配置文件 (所有应用适用)
-    cp "$s_path/docker-compose.yml" "$temp_dir/" 2>/dev/null
-    cp "$s_path/"*.conf "$temp_dir/" 2>/dev/null
-    cp "$s_path/"*.ini "$temp_dir/" 2>/dev/null
-    # 兼容应用商店的数据目录
-    if [ -d "$s_path/data" ]; then cp -r "$s_path/data" "$temp_dir/"; fi
+    # 1. 备份配置文件 (yml, conf, env 等)
+    # 使用 find 排除 data 目录，防止重复备份 (如果 data 很大)
+    find "$s_path" -maxdepth 1 -type f -exec cp {} "$temp_dir/" \;
 
-    # 2. 智能数据库导出 (MySQL/MariaDB)
+    # 2. [通用] 备份本地挂载的 data 目录 (应用商店应用通常用这个)
+    if [ -d "$s_path/data" ]; then
+        echo " - 发现本地数据目录 (data)，正在打包..."
+        # 将 data 目录打包成一个独立文件，方便还原
+        tar czf "$temp_dir/local_data.tar.gz" -C "$s_path" data
+    fi
+
+    # 3. [WP专用] 备份 Docker 卷 (wp-content)
+    app_container=$(docker compose -f "$s_path/docker-compose.yml" ps -q wordpress 2>/dev/null)
+    if [ ! -z "$app_container" ]; then
+        echo " - [WP] 提取 Docker 数据卷..."
+        docker run --rm --volumes-from "$app_container" -v "$temp_dir":/backup alpine tar czf /backup/wp_content.tar.gz -C /var/www/html wp-content 2>/dev/null
+    fi
+
+    # 4. [数据库] 尝试导出 MySQL (如果存在)
     if [ -f "$s_path/docker-compose.yml" ]; then
-        pwd=$(grep "MYSQL_ROOT_PASSWORD" "$s_path/docker-compose.yml" | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
-        if [ ! -z "$pwd" ]; then
-            db_container=$(docker compose -f "$s_path/docker-compose.yml" ps -q db 2>/dev/null)
-            if [ ! -z "$db_container" ]; then
-                echo " - 导出数据库 SQL..."
-                docker exec "$db_container" mysqldump -u root -p"$pwd" --all-databases > "$temp_dir/db.sql" 2>/dev/null
+        pwd=$(grep "MYSQL_ROOT_PASSWORD" "$s_path/docker-compose.yml" | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'" | tr -d '\r')
+        db_container=$(docker compose -f "$s_path/docker-compose.yml" ps -q db 2>/dev/null)
+        
+        # 只有当找到了密码 且 找到了db容器，才尝试导出
+        if [ ! -z "$db_container" ] && [ ! -z "$pwd" ]; then
+            echo " - [DB] 尝试导出 MySQL..."
+            if docker exec "$db_container" mysqldump -u root -p"$pwd" --all-databases > "$temp_dir/db.sql" 2>/dev/null; then
+                echo -e "   ${GREEN}✔ SQL 导出成功${NC}"
+            else
+                # 失败不报错，因为可能是 Postgres 或其他库，不强制
+                echo -e "   ℹ️  未检测到兼容的 MySQL，跳过 SQL 导出 (可能是 SQLite/PG)"
             fi
         fi
     fi
 
-    # 3. 智能数据卷提取 (针对 WP 的 wp-content)
-    app_container=$(docker compose -f "$s_path/docker-compose.yml" ps -q wordpress 2>/dev/null)
-    if [ ! -z "$app_container" ]; then
-        echo " - 提取 Docker 数据卷 (wp-content)..."
-        docker run --rm --volumes-from "$app_container" -v "$temp_dir":/backup alpine tar czf /backup/wp_content.tar.gz -C /var/www/html wp-content 2>/dev/null
-    fi
-
-    # 4. 打包与存储
-    echo " - 生成压缩包..."
+    # 5. 打包总文件
+    echo " - 生成最终压缩包..."
     cd /tmp && tar czf "$archive_name" "$b_name"
     
     local local_backup_dir="$BASE_DIR/backups"
     mkdir -p "$local_backup_dir"
     mv "/tmp/$archive_name" "$local_backup_dir/"
-    echo -e "${GREEN}✔ 本地备份保存至: $local_backup_dir/$archive_name${NC}"
+    echo -e "${GREEN}✔ 备份完成: $archive_name${NC}"
 
-    # 5. 云端上传
     if [ "$has_remote" -eq 1 ]; then
-        echo -e "${YELLOW} - 正在上传至云端 (remote:wp_backups/)...${NC}"
+        echo -e "${YELLOW} - 上传至云端...${NC}"
         rclone copy "$local_backup_dir/$archive_name" "remote:wp_backups/"
     fi
-    
     rm -rf "$temp_dir"
-    write_log "Backup completed for $site_domain"
 }
 
-# === 核心逻辑：执行还原 ===
-# 参数: $1 = 备份文件路径, $2 = 目标域名
+# === [V3.0 通用版] 核心还原逻辑 ===
 function perform_restore_logic() {
     local backup_file=$1
     local target_domain=$2
     local target_dir="$SITES_DIR/$target_domain"
 
-    if [ ! -f "$backup_file" ]; then echo "错误: 文件不存在 $backup_file"; return; fi
+    if [ ! -f "$backup_file" ]; then echo "错误: 文件不存在"; return; fi
 
-    echo -e "${YELLOW}>>> [Restore] 正在还原到: $target_domain${NC}"
-    echo -e "${RED}⚠️  警告: 目标目录将被清空并覆盖！${NC}"
+    echo -e "${YELLOW}>>> [Restore] 正在还原: $target_domain${NC}"
+    echo -e "${RED}⚠️  警告: 将强制覆盖目标目录并重建容器！${NC}"
+    read -p "确认执行? (yes/no): " confirm
+    if [ "$confirm" != "yes" ]; then return; fi
     
-    # 1. 解压备份
+    # 1. 解压
     local tar_dir=$(tar tf "$backup_file" | head -1 | cut -f1 -d"/")
     tar xzf "$backup_file" -C /tmp
     local restore_path="/tmp/$tar_dir"
 
-    # 2. 清理旧环境
+    # 2. 清理旧环境 (防止密码/配置冲突)
     if [ -d "$target_dir" ]; then
-        echo " - 停止旧容器..."
-        cd "$target_dir" && docker compose down >/dev/null 2>&1
+        echo " - 停止旧服务并清理..."
+        cd "$target_dir" && docker compose down -v >/dev/null 2>&1
         rm -rf "$target_dir"
     fi
     mkdir -p "$target_dir"
 
     # 3. 恢复配置文件
     echo " - 恢复配置文件..."
-    cp -r "$restore_path"/* "$target_dir/" 2>/dev/null
-    
-    # 4. 启动容器 (初始化环境)
+    # 排除 .tar.gz 和 .sql 文件，只复制配置文件
+    find "$restore_path" -maxdepth 1 -type f ! -name "*.tar.gz" ! -name "*.sql" -exec cp {} "$target_dir/" \;
+
+    # 4. [通用] 恢复本地 data 目录 (关键修复点)
+    if [ -f "$restore_path/local_data.tar.gz" ]; then
+        echo " - [通用] 恢复本地数据目录 (data)..."
+        tar xzf "$restore_path/local_data.tar.gz" -C "$target_dir"
+    fi
+
+    # 5. 启动容器 (初始化环境)
     echo " - 启动容器..."
     cd "$target_dir" && docker compose up -d
 
-    # 5. 恢复 WordPress 数据卷 (如果有)
-    if [ -f "$target_dir/wp_content.tar.gz" ]; then
-        echo " - 恢复 Docker 数据卷 (wp-content)..."
-        # 等待容器卷初始化
-        sleep 5
+    # 6. [WP专用] 恢复 Docker 卷
+    if [ -f "$restore_path/wp_content.tar.gz" ]; then
+        echo " - [WP] 恢复 wp-content 卷..."
+        sleep 3
         app_c=$(docker compose ps -q wordpress)
         if [ ! -z "$app_c" ]; then
-            docker run --rm --volumes-from "$app_c" -v "$target_dir":/backup alpine sh -c "tar xzf /backup/wp_content.tar.gz -C /var/www/html"
+            docker run --rm --volumes-from "$app_c" -v "$restore_path":/backup alpine sh -c "tar xzf /backup/wp_content.tar.gz -C /var/www/html"
         fi
-        rm "$target_dir/wp_content.tar.gz"
     fi
 
-    # 6. 导入数据库 (如果有)
-    if [ -f "$target_dir/db.sql" ]; then
-        echo " - 等待数据库启动 (约15秒)..."
-        # 简单等待或循环检测
-        for i in {1..30}; do
-            if docker compose exec -T db mysqladmin ping -h localhost --silent >/dev/null 2>&1; then break; fi
-            echo -n "."
-            sleep 1
-        done
-        echo -e "\n - 导入数据库..."
-        pwd=$(grep MYSQL_ROOT_PASSWORD docker-compose.yml | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'")
-        docker compose exec -T db mysql -u root -p"$pwd" < "db.sql"
+    # 7. [DB] 导入 MySQL (如果存在)
+    if [ -f "$restore_path/db.sql" ]; then
+        echo " - 检测到 SQL 备份，准备导入..."
+        pwd=$(grep "MYSQL_ROOT_PASSWORD" docker-compose.yml | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'" | tr -d '\r')
+        
+        if [ ! -z "$pwd" ]; then
+            echo -n "   等待数据库就绪"
+            db_ready=0
+            for i in {1..30}; do
+                if docker compose exec -T db mysqladmin ping -h localhost -u root -p"$pwd" --silent >/dev/null 2>&1; then
+                    db_ready=1; break
+                fi
+                echo -n "."; sleep 2
+            done
+            echo ""
+            
+            if [ "$db_ready" -eq 1 ]; then
+                if docker compose exec -T db mysql -u root -p"$pwd" < "$restore_path/db.sql"; then
+                     echo -e "   ${GREEN}✔ 数据库导入成功${NC}"
+                else
+                     echo -e "   ${RED}❌ SQL 导入失败 (版本不兼容?)${NC}"
+                fi
+            fi
+        fi
     fi
+    
+    # 8. 刷新网关
+    if type reload_gateway_config >/dev/null 2>&1; then reload_gateway_config; else docker exec gateway_proxy nginx -s reload >/dev/null 2>&1; fi
 
     rm -rf "$restore_path"
-    echo -e "${GREEN}✔ 还原操作完成${NC}"
-    write_log "Restored $target_domain from $backup_file"
+    echo -e "${GREEN}✔ 还原完成${NC}"
+    write_log "Restored $target_domain"
 }
 
 function backup_restore_ops() { 
@@ -3041,3 +3063,4 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
+
