@@ -290,6 +290,20 @@ EOF
 chmod +x "$LISTENER_SCRIPT"
 }
 
+# === [新增] 强制刷新网关配置 ===
+function reload_gateway_config() {
+    echo -e "${YELLOW}>>> 正在同步网关配置...${NC}"
+    # 1. 稍微等一下，确保新容器的网络已经完全连通
+    sleep 3
+    # 2. 发送重载信号 (不会断开现有连接)
+    if docker ps | grep -q "gateway_proxy"; then
+        docker exec gateway_proxy nginx -s reload >/dev/null 2>&1
+        echo -e "${GREEN}✔ 网关路由表已刷新${NC}"
+    else
+        echo -e "${RED}⚠️  警告: 网关容器未运行，跳过刷新${NC}"
+    fi
+}
+
 # ================= 3. 业务功能函数 =================
 
 # [V9] 主机安全审计
@@ -1362,6 +1376,7 @@ function install_remote_app() {
 
     # 4. 启动
     cd "$sdir" && docker compose up -d
+    reload_gateway_config
     write_log "Installed Cloud App ($app_key) on $domain"
     echo -e "${GREEN}✔ $app_name 部署成功！${NC}"
     check_ssl_status "$domain"
@@ -1952,6 +1967,7 @@ EOF
     # 5. 启动容器
     echo -e "${GREEN}>>> 正在启动容器...${NC}"
     $DOCKER_COMPOSE_CMD -f "$sdir/docker-compose.yml" up -d
+    reload_gateway_config
     
     check_ssl_status "$fd"
     write_log "Created site $fd (PHP:$pt DB:$di Redis:$rt)"
@@ -2321,7 +2337,7 @@ function change_domain() {
         fi
         
         # 6. 刷新网关
-        docker exec gateway_proxy nginx -s reload
+        reload_gateway_config
         
         # 7. [新增] 自动申请并检查证书
         echo -e "${YELLOW}>>> 正在自动申请 SSL 证书，请稍候...${NC}"
