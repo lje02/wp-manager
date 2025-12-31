@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.3.3 (快捷方式: mmp)"
+VERSION="V9.3.2 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -87,7 +87,7 @@ function configure_rclone() {
 function check_dependencies() {
     echo -e "${YELLOW}>>> 正在检查系统环境...${NC}"
 
-    # 1. 解决新机器 apt 锁被占用问题 (Debian/Ubuntu)
+    # [新增] 1. 解决新机器 apt 锁被占用问题 (Debian/Ubuntu)
     if [ -f /etc/debian_version ]; then
         if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
             echo -e "${YELLOW}⚠️  检测到系统后台正在更新，尝试释放锁...${NC}"
@@ -96,32 +96,46 @@ function check_dependencies() {
         fi
     fi
 
-    # 2. 检查基础依赖 (jq, openssl, net-tools)
-    # 注意：curl 已在主程序入口处预装，这里只检查其他的
-    local deps=("jq" "openssl" "netstat:net-tools") 
+    # [新增] 2. 优先安装 curl (这是后续安装 Docker 的基础)
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${YELLOW}>>> 正在安装基础工具 (curl)...${NC}"
+        if [ -f /etc/debian_version ]; then 
+            apt-get update -y && apt-get install -y curl
+        else 
+            yum install -y curl
+        fi
+    fi
+
+    # 3. 检查其他依赖 (jq, openssl, net-tools)
+    local deps=("jq" "openssl" "netstat:net-tools") # 格式: 命令:包名
     for dep in "${deps[@]}"; do
-        cmd="${dep%%:*}"
-        pkg="${dep##*:}"
+        cmd="${dep%%:*}"  # 取冒号前
+        pkg="${dep##*:}"  # 取冒号后
         if ! command -v "$cmd" >/dev/null 2>&1; then
             echo -e "${YELLOW}>>> 正在安装依赖组件 ($pkg)...${NC}"
             if [ -f /etc/debian_version ]; then 
-                apt-get update -y && apt-get install -y "$pkg"
+                apt-get install -y "$pkg"
             else 
                 yum install -y "$pkg"
             fi
         fi
     done
 
-    # 3. Docker 智能检测与安装
+    # 4. Docker 智能检测与安装
     if command -v docker >/dev/null 2>&1; then
+        # --- 情况 A: Docker 已存在 ---
         local d_ver=$(docker -v | awk '{print $3}' | tr -d ',')
         echo -e "${GREEN}✔ 检测到 Docker 已安装 (版本: $d_ver)${NC}"
+        
         if ! systemctl is-active docker >/dev/null 2>&1; then
+            echo -e "${YELLOW}  └─ 服务未运行，正在启动 Docker...${NC}"
             systemctl start docker
         fi
     else
+        # --- 情况 B: Docker 不存在 ---
         echo -e "${YELLOW}>>> 未检测到 Docker，正在自动安装...${NC}"
-        # 使用阿里云镜像加速 (国内机器必备)
+        
+        # [优化] 这里已经确保了 curl 存在，并且增加了国内源判断
         if curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun; then
             systemctl enable docker && systemctl start docker
             write_log "Installed Docker"
@@ -132,11 +146,12 @@ function check_dependencies() {
         fi
     fi
 
-    # 4. 补全 Docker Compose 插件
+    # 5. 检查 Docker Compose 插件
     if ! docker compose version >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  检测到 Docker Compose 插件缺失${NC}"
         echo -e "${YELLOW}>>> 正在补全 Docker Compose 插件...${NC}"
         if [ -f /etc/debian_version ]; then 
-            apt-get install -y docker-compose-plugin
+            apt-get update && apt-get install -y docker-compose-plugin
         else 
             yum install -y docker-compose-plugin
         fi
@@ -2609,62 +2624,6 @@ function uninstall_cluster() {
     fi
 }
 
-# === 新增功能：网络自动修复 (启动时运行) ===
-function check_and_fix_network() {
-    echo -e "${YELLOW}>>> [自愈] 正在检查网络连通性...${NC}"
-    local test_domain="github.com"
-    
-    # 1. 检查当前优先级设置
-    if grep -q "^precedence ::ffff:0:0/96  100" /etc/gai.conf 2>/dev/null; then
-        echo -e " - 网络偏好: ${GREEN}IPv4 优先 (已配置)${NC}"
-        return
-    fi
-
-    # 2. 如果未配置，测试默认连接速度 (3秒超时)
-    echo -e " - 网络偏好: ${YELLOW}默认 (正在检测 IPv6 质量...)${NC}"
-    if ! curl -s --connect-timeout 3 "https://$test_domain" >/dev/null; then
-        echo -e "${RED}⚠️  检测到默认连接超时！${NC}"
-        echo -e "${YELLOW}>>> 正在自动切换为 IPv4 优先模式...${NC}"
-        sed -i '/^precedence ::ffff:0:0\/96  100/d' /etc/gai.conf 2>/dev/null
-        echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
-        echo -e "${GREEN}✔ 已自动修复网络优先级。${NC}"
-    else
-        echo -e " - 网络质量: ${GREEN}良好${NC}"
-    fi
-}
-
-# === 新增功能：手动管理协议 (菜单用) ===
-function net_protocol_manager() {
-    while true; do
-        clear
-        echo -e "${YELLOW}=== 🌐 IPv4/IPv6 协议偏好设置 ===${NC}"
-        if grep -q "^precedence ::ffff:0:0/96  100" /etc/gai.conf 2>/dev/null; then
-            prio_status="${GREEN}IPv4 优先${NC}"
-        else
-            prio_status="${YELLOW}默认 (IPv6 优先)${NC}"
-        fi
-        echo -e "当前状态: $prio_status"
-        echo "------------------------------------------------"
-        echo " 1. 优先使用 IPv4 (解决拉取慢/连接超时)"
-        echo " 2. 恢复默认设置 (系统自动选择)"
-        echo " 3. 彻底禁用 IPv6 (仅在极端情况下使用)"
-        echo " 0. 返回"
-        echo "------------------------------------------------"
-        read -p "请选择: " o
-        case $o in
-            0) return;;
-            1) sed -i '/^precedence ::ffff:0:0\/96  100/d' /etc/gai.conf 2>/dev/null
-               echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
-               echo -e "${GREEN}✔ 已设置 IPv4 优先${NC}"; pause_prompt;;
-            2) sed -i '/^precedence ::ffff:0:0\/96  100/d' /etc/gai.conf 2>/dev/null
-               echo -e "${GREEN}✔ 已恢复默认${NC}"; pause_prompt;;
-            3) echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
-               sysctl -p >/dev/null 2>&1
-               echo -e "${GREEN}✔ IPv6 已禁用${NC}"; pause_prompt;;
-        esac
-    done
-}
-
 function system_optimizer() {
     while true; do
         clear
@@ -2690,11 +2649,10 @@ function system_optimizer() {
         echo " 1. 开启/设置 虚拟内存 (Swap) - 防止内存不足崩溃"
         echo " 2. 开启 TCP BBR 加速 - 优化网络连接速度"
         echo " 3. 系统网络测速 (Speedtest)"
-        echo " 4. 自启检测 (检查 Docker/网关 重启策略)"
-        echo -e " 5. ${CYAN}IPv4/IPv6 协议偏好设置${NC} "
+        echo " 4. 自启检测"  # <--- 已修复：补全了双引号
         echo " 0. 返回"
         echo "------------------------------------------------"
-        read -p "请选择 [0-5]: " o
+        read -p "请选择 [0-4]: " o
         
         case $o in
             0) return;;
@@ -2741,15 +2699,13 @@ function system_optimizer() {
             3)
                 check_dependencies
                 echo -e "${YELLOW}>>> 正在安装 Speedtest CLI...${NC}"
+                # 使用 Docker 运行测速，免去安装依赖
                 docker run --rm --net=host gists/speedtest-cli
                 pause_prompt;;
             
             4) 
+                # 调用检测函数
                 check_boot_status;;
-            
-            5)
-                # 调用新写的协议管理函数
-                net_protocol_manager;;
         esac
     done
 }
@@ -2908,16 +2864,9 @@ function show_menu() {
 }
 
 # ================= 5. 主程序循环 =================
-
-# [新增] 1. 强制 Root 检查
-if [ "$(id -u)" != "0" ]; then
-    echo -e "${RED}错误: 必须使用 Root 权限运行。${NC}"
-    echo -e "请输入 ${GREEN}sudo -i${NC} 切换用户。"
-    exit 1
-fi
-
-# 2. 定时备份任务入口 (Cron用)
+# === 命令行模式处理 (用于 Cron 自动备份) ===
 if [ "$1" == "backup_all" ]; then
+    # 仅在后台运行备份，不启动菜单
     check_rclone
     echo "Starting Daily Backup: $(date)"
     for dir in "$SITES_DIR"/*; do 
@@ -2928,52 +2877,38 @@ if [ "$1" == "backup_all" ]; then
     echo "Daily Backup Finished: $(date)"
     exit 0
 fi
-
-# [核心修复] 3. 网络自愈逻辑
-# 在安装 Docker 之前，先确保 curl 存在，并修复 IPv6 优先级
-if ! command -v curl >/dev/null 2>&1; then
-    echo ">>> 初始化基础组件 (curl)..."
-    if command -v apt-get >/dev/null 2>&1; then 
-        apt-get update && apt-get install -y curl
-    elif command -v yum >/dev/null 2>&1; then 
-        yum install -y curl
-    fi
-fi
-# 调用网络修复 (解决 Docker 拉取卡死)
-check_and_fix_network
-
-# 4. 执行常规依赖检查 (安装 Docker)
 check_dependencies
 install_shortcut
+if ! docker ps --format '{{.Names}}' | grep -q "^gateway_proxy$"; then echo "初始化网关..."; init_gateway "auto"; fi
 
-# 5. 初始化网关
-if ! docker ps --format '{{.Names}}' | grep -q "^gateway_proxy$"; then 
-    echo "初始化网关..."
-    init_gateway "auto"
-fi
-
-# 6. 进入菜单循环
 while true; do 
     show_menu 
     case $option in 
+        # === 部署中心 ===
         1) create_site;; 
         2) create_proxy;; 
         3) create_redirect;; 
         4) app_store;;
+        
+        # === 运维管理 ===
         10) list_sites;; 
         11) container_ops;; 
         12) delete_site;; 
         13) app_update_manager;; 
         14) traffic_stats;; 
         15) component_manager;; 
-        16) change_domain;;
+        16) change_domain;;      # 更换域名
         17) system_cleanup;; 
         18) manage_remarks;; 
         19) system_optimizer;;
+
+        # === 数据与工具 ===
         20) wp_toolbox;; 
-        21) backup_restore_ops;; 
-        22) db_admin_tool;;
-        23) db_manager;;
+        21) backup_restore_ops;; # 全站备份
+        22) db_admin_tool;;      # Adminer 网页管理
+        23) db_manager;;         # 命令行 SQL 导入导出
+
+        # === 安全与审计 ===
         30) security_center;; 
         31) telegram_manager;; 
         32) sys_monitor;; 
@@ -2981,10 +2916,13 @@ while true; do
         34) view_container_logs;;
         35) ssh_key_manager;;
         99) rebuild_gateway_action;;
+
+        # === 系统操作 ===
         u|U) update_script;; 
         x|X) uninstall_cluster;; 
         0) exit 0;;
         *) echo "无效选项"; sleep 1;;
     esac
 done
+
 
