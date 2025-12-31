@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V9.6 (快捷方式: mmp)"
+VERSION="V9.2.2 (快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -2015,6 +2015,7 @@ networks:
 EOF
 
     cd "$sdir" && docker compose up -d
+    reload_gateway_config
     check_ssl_status "$d"
     write_log "Created proxy $d"
 }
@@ -2075,6 +2076,7 @@ networks:
 EOF
 
     cd "$sdir" && docker compose up -d
+    reload_gateway_config
     check_ssl_status "$s"
 }
 
@@ -3039,4 +3041,3 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
-
