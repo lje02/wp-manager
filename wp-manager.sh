@@ -3136,8 +3136,8 @@ function show_menu() {
     
     # --- 1. 部署中心 ---
     echo -e "${YELLOW}[🚀 部署中心]${NC}"
-    echo -e " 1. 部署 WordPress             2. 部署 反向代理"
-    echo -e " 3. 部署 301 重定向            4. ${GREEN}应用商店 (App Store)${NC}"
+    echo -e " 1. 新建 WordPress             2.新建 反向代理"
+    echo -e " 3. 新建 301 重定向            4. ${GREEN}应用商店 (App Store)${NC}"
     
     echo "" 
     
@@ -3147,13 +3147,13 @@ function show_menu() {
     echo -e " 12. 删除指定站点              13. 更新应用/站点"
     echo -e " 14. 流量统计 (GoAccess)       15. 组件版本升降级"
     echo -e " 16. 更换网站域名              17. 系统清理 (证书/垃圾)"
-    echo -e " 18. 管理站点备注              19. 自启检测和 (Swap/BBR)"
+    echo -e " 18. 管理站点备注              19. 自启检测/ip/Swap/BBR"
     
     echo ""
     
     # --- 3. 数据与工具 ---
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
-    echo -e " 20. WP-CLI 瑞士军刀           21. 备份/还原 (云端)"
+    echo -e " 20. WP-CLI            21. 备份/还原 (云端)"
     echo -e " 22. 数据库管理 (Adminer)      23. 数据库 导入/导出 (CLI)"
     
     echo ""
@@ -3163,7 +3163,7 @@ function show_menu() {
     echo -e " 30. 安全防御中心 (WAF)        31. Telegram 通知"
     echo -e " 32. 系统资源监控              33. 脚本操作日志"
     # === 新增下面这一行 ===
-    echo -e " 34. 容器日志 (找密码)         35. ${GREEN}SSH 密钥管理${NC}" 
+    echo -e " 34. 容器日志 (找密码)         35. SSH 密钥管理" 
     echo -e " 99. 重建核心网关"
 
 
