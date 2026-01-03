@@ -561,6 +561,112 @@ function security_center() {
     done 
 }
 
+function socat_manager() {
+    # 依赖检查
+    if ! command -v socat >/dev/null 2>&1; then
+        echo -e "${YELLOW}>>> 正在安装 Socat (用于端口转发)...${NC}"
+        if [ -f /etc/debian_version ]; then 
+            apt-get update && apt-get install -y socat
+        else 
+            yum install -y socat
+        fi
+    fi
+
+    # 智能获取 Docker 网桥 IP (容器看到的宿主机IP)
+    # 尝试获取 docker0 的 IP，如果获取不到则默认 172.17.0.1
+    local bridge_ip=$(ip -4 addr show docker0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+    [ -z "$bridge_ip" ] && bridge_ip="172.17.0.1"
+
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🌉 宿主机应用穿透 (Localhost Proxy) ===${NC}"
+        echo -e "功能: 让容器能访问宿主机的 127.0.0.1 应用"
+        echo -e "原理: Docker网桥($bridge_ip:Port) -> 转发 -> 宿主机(127.0.0.1:Port)"
+        echo "------------------------------------------------"
+        
+        # 列出当前已存在的转发服务
+        echo -e "${CYAN}当前转发列表:${NC}"
+        local count=0
+        for s in /etc/systemd/system/mmp-socat-*.service; do
+            if [ -f "$s" ]; then
+                # 从文件名提取端口 mmp-socat-8080.service -> 8080
+                local p=$(basename "$s" | sed 's/mmp-socat-//;s/.service//')
+                # 检查运行状态
+                if systemctl is-active --quiet "mmp-socat-$p"; then st="${GREEN}● 运行中${NC}"; else st="${RED}● 已停止${NC}"; fi
+                echo -e " - 转发端口: ${GREEN}$p${NC} \t状态: $st"
+                ((count++))
+            fi
+        done
+        [ "$count" -eq 0 ] && echo " (暂无转发配置)"
+        
+        echo "------------------------------------------------"
+        echo " 1. 添加新的转发规则"
+        echo " 2. 删除/停止 转发规则"
+        echo " 0. 返回"
+        echo "------------------------------------------------"
+        read -p "请选择: " o
+
+        case $o in
+            0) return;;
+            
+            1)
+                echo -e "${YELLOW}>>> 新增转发规则${NC}"
+                read -p "1. 请输入宿主机应用端口 (例如 3000): " host_port
+                read -p "2. 请输入容器访问端口 (留空同上): " docker_port
+                [ -z "$docker_port" ] && docker_port="$host_port"
+
+                service_name="mmp-socat-${docker_port}"
+                service_file="/etc/systemd/system/${service_name}.service"
+
+                # 写入 Systemd 服务文件
+                cat > "$service_file" <<EOF
+[Unit]
+Description=MMP Socat Forwarder ($docker_port -> 127.0.0.1:$host_port)
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=root
+# 核心命令：监听 Docker 网桥 IP，转发到 本地回环 IP
+ExecStart=/usr/bin/socat TCP-LISTEN:${docker_port},bind=${bridge_ip},fork TCP:127.0.0.1:${host_port}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+                # 启动服务
+                systemctl daemon-reload
+                systemctl enable "$service_name" >/dev/null 2>&1
+                systemctl start "$service_name"
+                
+                echo -e "${GREEN}✔ 穿透服务已启动！${NC}"
+                echo "------------------------------------------------"
+                echo -e "🚀 你的容器现在可以通过以下地址访问宿主机应用："
+                echo -e "   ${CYAN}http://${bridge_ip}:${docker_port}${NC}"
+                echo "------------------------------------------------"
+                pause_prompt
+                ;;
+
+            2)
+                read -p "请输入要删除的【容器访问端口】: " d_port
+                service_name="mmp-socat-${d_port}"
+                
+                if [ -f "/etc/systemd/system/${service_name}.service" ]; then
+                    systemctl stop "$service_name"
+                    systemctl disable "$service_name" >/dev/null 2>&1
+                    rm -f "/etc/systemd/system/${service_name}.service"
+                    systemctl daemon-reload
+                    echo -e "${GREEN}✔ 已删除规则: $d_port${NC}"
+                else
+                    echo -e "${RED}❌ 规则不存在${NC}"
+                fi
+                pause_prompt
+                ;;
+        esac
+    done
+}
+
 function ssh_key_manager() {
     # 定义 SSH 配置文件路径
     SSHD_CONFIG="/etc/ssh/sshd_config"
@@ -3306,8 +3412,9 @@ function show_menu() {
     
     # --- 3. 数据与工具 ---
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
-    echo -e " 20. WP-CLI                 21. 备份/还原 (云端)"
+    echo -e " 20. WP-CLI                  21. 备份/还原 (云端)"
     echo -e " 22. 数据库管理 (Adminer)      23. 数据库 导入/导出 (CLI)"
+	echo -e " 24. 宿主机应用穿透"
     
     echo ""
 
@@ -3394,6 +3501,7 @@ while true; do
         21) backup_restore_ops;; 
         22) db_admin_tool;;
         23) db_manager;;
+		24) socat_manager;;
         30) security_center;; 
         31) telegram_manager;; 
         32) sys_monitor;; 
