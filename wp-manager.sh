@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.1(快捷方式: mmp)"
+VERSION="V10.2(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -1161,6 +1161,141 @@ function component_manager() {
     done 
 }
 
+function add_basic_auth() {
+    # 依赖检查
+    if ! command -v htpasswd >/dev/null 2>&1; then
+        echo -e "${YELLOW}>>> 正在安装 apache2-utils...${NC}"
+        if [ -f /etc/debian_version ]; then apt-get update && apt-get install -y apache2-utils
+        else yum install -y httpd-tools; fi
+    fi
+
+    while true; do
+        clear
+        echo -e "${YELLOW}=== 🔐 通用型二级密码锁 (Universal Auth) ===${NC}"
+        echo -e "功能：为任何站点/应用添加 HTTP Basic Auth 认证。"
+        echo "--------------------------"
+        
+        ls -1 "$SITES_DIR"
+        echo "--------------------------"
+        read -p "请输入要加锁的域名 (0返回): " d
+        [ "$d" == "0" ] && return
+        
+        sdir="$SITES_DIR/$d"
+        if [ ! -d "$sdir" ]; then echo -e "${RED}目录不存在${NC}"; sleep 1; continue; fi
+        
+        # 1. 智能探测配置文件
+        nginx_conf=""
+        docker_yml="$sdir/docker-compose.yml"
+        
+        if [ -f "$sdir/nginx.conf" ]; then
+            nginx_conf="$sdir/nginx.conf"      # WordPress 或 标准站点
+            conf_type="std"
+        elif [ -f "$sdir/nginx-proxy.conf" ]; then
+            nginx_conf="$sdir/nginx-proxy.conf" # 反向代理站点
+            conf_type="proxy"
+        else
+            echo -e "${RED}未找到支持的 Nginx 配置文件，无法加锁。${NC}"
+            echo "目前仅支持通过本脚本部署的 WP 或 Proxy 站点。"
+            pause_prompt; continue
+        fi
+
+        echo -e "当前选中: ${CYAN}$d${NC} (类型: $conf_type)"
+        echo "--------------------------"
+        echo " 1. 开启/重置 密码锁"
+        echo " 2. 关闭 密码锁"
+        echo " 0. 返回"
+        read -p "选择: " op
+        
+        if [ "$op" == "1" ]; then
+            echo -e "\n${YELLOW}--- 模式选择 ---${NC}"
+            echo " A. 全站加锁 (访问域名就需要密码，适合私有应用)"
+            echo " B. 仅登录页加锁 (适合 WordPress，仅保护 wp-login.php)"
+            read -p "请选择模式 [A/B]: " mode
+            
+            # 输入用户名密码
+            read -p "设置用户名 (默认admin): " u; [ -z "$u" ] && u="admin"
+            read -p "设置密码: " p
+            if [ -z "$p" ]; then echo "密码不能为空"; sleep 1; continue; fi
+
+            # 生成密码文件
+            echo -e "${YELLOW}>>> 生成密码文件...${NC}"
+            htpasswd -bc "$sdir/.htpasswd" "$u" "$p"
+            
+            # --- 核心逻辑：挂载 .htpasswd 到容器 ---
+            # 检查 docker-compose.yml 是否已经挂载了 .htpasswd
+            # 我们利用 grep 检查，如果没有，就用 sed 插入
+            if ! grep -q "\.htpasswd" "$docker_yml"; then
+                echo -e "${YELLOW}>>> 正在注入挂载配置...${NC}"
+                # 寻找挂载 Nginx 配置的那一行，在它下面追加一行
+                # 兼容 nginx.conf 和 nginx-proxy.conf 的挂载写法
+                if grep -q "nginx.conf:/etc/nginx/conf.d/default.conf" "$docker_yml"; then
+                     sed -i '/nginx.conf:\/etc\/nginx\/conf.d\/default.conf/a \      - ./.htpasswd:/etc/nginx/conf.d/.htpasswd' "$docker_yml"
+                elif grep -q "nginx-proxy.conf:/etc/nginx/conf.d/default.conf" "$docker_yml"; then
+                     sed -i '/nginx-proxy.conf:\/etc\/nginx\/conf.d\/default.conf/a \      - ./.htpasswd:/etc/nginx/conf.d/.htpasswd' "$docker_yml"
+                else
+                     echo -e "${RED}⚠️  自动挂载失败，请手动修改 docker-compose.yml 挂载 .htpasswd${NC}"
+                fi
+                need_restart=1
+            else
+                need_restart=0
+            fi
+
+            # --- 核心逻辑：修改 Nginx 配置 ---
+            # 先清理旧的 auth 配置，防止重复
+            sed -i '/auth_basic/d' "$nginx_conf"
+            
+            if [ "$mode" == "A" ] || [ "$mode" == "a" ]; then
+                # === 模式 A: 全站加锁 ===
+                # 在 "location / {" 后面插入认证指令
+                sed -i '/location \/ {/a \        auth_basic "Private Site";\n        auth_basic_user_file /etc/nginx/conf.d/.htpasswd;' "$nginx_conf"
+                echo -e "${GREEN}✔ 已配置全站锁定${NC}"
+                
+            else
+                # === 模式 B: 特定路径 (WP专用) ===
+                if [ "$conf_type" != "std" ]; then
+                    echo -e "${RED}❌ 代理模式暂不支持路径锁，已自动切换为全站锁。${NC}"
+                    sed -i '/location \/ {/a \        auth_basic "Private Site";\n        auth_basic_user_file /etc/nginx/conf.d/.htpasswd;' "$nginx_conf"
+                else
+                    # 针对 WordPress 结构，寻找 wp-login.php 的 location
+                    if grep -q "location = /wp-login.php" "$nginx_conf"; then
+                        sed -i '/location = \/wp-login.php {/a \        auth_basic "Admin Only";\n        auth_basic_user_file /etc/nginx/conf.d/.htpasswd;' "$nginx_conf"
+                    else
+                        # 如果没找到 location (旧版配置)，提示用户重建
+                        echo -e "${RED}⚠️  未找到 wp-login.php 配置段，请先升级站点配置(重建站点)。${NC}"
+                        pause_prompt; continue
+                    fi
+                fi
+                echo -e "${GREEN}✔ 已配置登录页锁定${NC}"
+            fi
+
+            # 应用更改
+            echo -e "${YELLOW}>>> 正在应用更改...${NC}"
+            if [ "$need_restart" -eq 1 ]; then
+                # 如果修改了挂载，必须 recreate
+                cd "$sdir" && docker compose up -d --force-recreate
+            else
+                # 如果只是改了 Nginx 配置，reload 即可 (极速)
+                # 获取容器名进行 reload
+                container_name=$(docker compose -f "$docker_yml" ps -q | head -n 1) # 简单粗暴获取第一个容器ID作为上下文
+                # 更精准的方法：
+                if [ "$conf_type" == "std" ]; then svc="nginx"; else svc="proxy"; fi
+                cd "$sdir" && docker compose exec "$svc" nginx -s reload
+            fi
+            
+            echo -e "${GREEN}✔ 部署完成！${NC}"
+            
+        elif [ "$op" == "2" ]; then
+            echo -e "${YELLOW}>>> 正在移除密码锁...${NC}"
+            sed -i '/auth_basic/d' "$nginx_conf"
+            if [ "$conf_type" == "std" ]; then svc="nginx"; else svc="proxy"; fi
+            cd "$sdir" && docker compose exec "$svc" nginx -s reload
+            echo -e "${GREEN}✔ 密码锁已关闭${NC}"
+        fi
+        
+        pause_prompt
+    done
+}
+
 function fail2ban_manager() {
     # 定义日志路径
     local nginx_log="$LOG_DIR/access.log"
@@ -1203,7 +1338,9 @@ function fail2ban_manager() {
                 # 3. 写入过滤规则
                 cat > /etc/fail2ban/filter.d/nginx-scan.conf <<EOF
 [Definition]
-failregex = ^<HOST> -.*"(GET|POST|HEAD).*" (404|444|403) .*$
+failregex = ^<HOST> -.*"(GET|POST|HEAD).*" (404|444|403|401|429) .*$
+            ^<HOST> -.*"POST .*wp-login.php.*" 200 .*$ 
+            # 上面这行可选：如果你觉得有人不停POST登录页(即使返回200也是在试密码)也该封，就加上
 ignoreregex =
 EOF
 
@@ -1211,23 +1348,23 @@ EOF
                 cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 ignoreip = 127.0.0.1/8 ::1
-bantime  = 86400    ; 封禁 24小时
-findtime = 300      ; 5分钟内
-maxretry = 3        ; <--- 只需要3次错误就封禁！
+bantime  = 86400    ; 封禁 1 天
+findtime = 3000      ; 50分钟内
+maxretry = 3        ; 只有3次机会
 
 [sshd]
 enabled = true
 port    = ssh
 logpath = $ssh_log
 backend = systemd
-maxretry = 3        ; SSH 输错3次密码也封
+maxretry = 3
 
 [nginx-scan]
 enabled = true
 filter  = nginx-scan
 logpath = $nginx_log
 port    = http,https
-maxretry = 3        ; 扫描/WAF 触发3次即封
+maxretry = 5        ; 触发5次 Nginx 错误(含限速/404)即封禁
 action  = iptables-allports[name=nginx-scan]
 EOF
 
@@ -2019,6 +2156,9 @@ EOF
 
     # 2. 生成 Nginx 配置
     cat > "$sdir/nginx.conf" <<EOF
+# 定义限速区：以IP为key，内存10M，速率限制为每秒1次请求
+limit_req_zone \$binary_remote_addr zone=wp_login_limit:10m rate=1r/s;
+
 server { 
     listen 80; 
     server_name localhost;
@@ -2032,6 +2172,19 @@ server {
         try_files \$uri \$uri/ /index.php?\$args; 
     } 
     
+    # [新增] 专门保护登录页
+    location = /wp-login.php {
+        # 应用限速：允许瞬间突发3个请求，超过则返回 429 错误
+        limit_req zone=wp_login_limit burst=3 nodelay;
+        # 返回 429 状态码 (Too Many Requests)，方便 Fail2Ban 抓取
+        limit_req_status 429; 
+        
+        include fastcgi_params;
+        fastcgi_pass wordpress:9000;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param PATH_INFO \$fastcgi_path_info;
+    }
+
     location ~ \.php$ { 
         try_files \$uri =404; 
         fastcgi_split_path_info ^(.+\.php)(/.+)$; 
