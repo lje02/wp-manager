@@ -3316,7 +3316,8 @@ function show_menu() {
     echo -e " 30. 安全防御中心 (WAF)        31. Telegram 通知"
     echo -e " 32. 系统资源监控              33. 脚本操作日志"
     # === 新增下面这一行 ===
-    echo -e " 34. 容器日志 (找密码)         35. SSH 密钥管理" 
+    echo -e " 34. 容器日志 (找密码)         35. SSH 密钥管理"
+	echo -e " 36. 网站二级密码锁"
     echo -e " 99. 重建核心网关"
 
 
@@ -3399,6 +3400,7 @@ while true; do
         33) log_manager;; 
         34) view_container_logs;;
         35) ssh_key_manager;;
+		36) add_basic_auth;;
         99) rebuild_gateway_action;;
         u|U) update_script;; 
         x|X) uninstall_cluster;; 
