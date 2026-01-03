@@ -1,0 +1,31 @@
+services:
+  3xui:
+    image: ghcr.io/mhsanaei/3x-ui:latest
+    container_name: {{APP_NAME}}
+    restart: unless-stopped
+    tty: true
+    volumes:
+      - ./db/:/etc/x-ui/
+      - ./cert/:/root/cert/
+    environment:
+      XRAY_VMESS_AEAD_FORCED: "false"
+      XUI_ENABLE_FAIL2BAN: "true"
+      # === MMP 网关自动接入配置 ===
+      VIRTUAL_HOST: {{DOMAIN}}
+      LETSENCRYPT_HOST: {{DOMAIN}}
+      LETSENCRYPT_EMAIL: {{EMAIL}}
+      VIRTUAL_PORT: 2053  # 告诉网关，Web面板在容器内部是 2053 端口
+    
+    # === 端口映射说明 ===
+    # 因为走了 Bridge 模式，Web面板由网关接管 (无需映射 2053)
+    ports:
+      - "10000-60020:10000-60020"
+      # 如果需要更多端口，请手动修改此处并重启容器
+    
+    networks:
+      - proxy-net
+      - default
+
+networks:
+  proxy-net:
+    external: true
