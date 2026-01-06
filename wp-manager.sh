@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.2(快捷方式: mmp)"
+VERSION="V10.3(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -2740,7 +2740,7 @@ function cert_management() {
     done
 }
 
-function db_manager() { while true; do clear; echo "1.导出 2.导入 0.返回"; read -p "选: " c; case $c in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$s/${d}.sql"; echo "OK: $s/${d}.sql";; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "SQL File: " f; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); cat "$f" | docker compose -f "$s/docker-compose.yml" exec -T db mysql -u root -p"$pwd"; echo "OK";; esac; pause_prompt; done; }
+function db_manager() { while true; do clear; echo "1.导出 2.导入 0.返回"; read -p "选: " c; case $c in 0) return;; 1) ls -1 "$SITES_DIR"; read -p "域名: " d; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); docker compose -f "$s/docker-compose.yml" exec -T db mysqldump -u root -p"$pwd" --all-databases > "$s/${d}.sql"; echo "OK: $s/${d}.sql";; 2) ls -1 "$SITES_DIR"; read -p "域名: " d; read -p "SQL File: " f; s="$SITES_DIR/$d"; pwd=$(grep MYSQL_ROOT_PASSWORD "$s/docker-compose.yml"|awk -F': ' '{print $2}'); cat "$f" | docker compose -f "$s/docker-compose.yml" exec -T db sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD"'; echo "OK";; esac; pause_prompt; done; }
 
 function change_domain() { 
     while true; do
@@ -2878,7 +2878,7 @@ function perform_backup_logic() {
     rm -rf "$temp_dir"
 }
 
-# === [V3.0 通用版] 核心还原逻辑 ===
+# === [V3.0 修正版] 核心还原逻辑 ===
 function perform_restore_logic() {
     local backup_file=$1
     local target_domain=$2
@@ -2896,7 +2896,7 @@ function perform_restore_logic() {
     tar xzf "$backup_file" -C /tmp
     local restore_path="/tmp/$tar_dir"
 
-    # 2. 清理旧环境 (防止密码/配置冲突)
+    # 2. 清理旧环境
     if [ -d "$target_dir" ]; then
         echo " - 停止旧服务并清理..."
         cd "$target_dir" && docker compose down -v >/dev/null 2>&1
@@ -2906,10 +2906,9 @@ function perform_restore_logic() {
 
     # 3. 恢复配置文件
     echo " - 恢复配置文件..."
-    # 排除 .tar.gz 和 .sql 文件，只复制配置文件
     find "$restore_path" -maxdepth 1 -type f ! -name "*.tar.gz" ! -name "*.sql" -exec cp {} "$target_dir/" \;
 
-    # 4. [通用] 恢复本地 data 目录 (关键修复点)
+    # 4. [通用] 恢复本地 data 目录
     if [ -f "$restore_path/local_data.tar.gz" ]; then
         echo " - [通用] 恢复本地数据目录 (data)..."
         tar xzf "$restore_path/local_data.tar.gz" -C "$target_dir"
@@ -2929,29 +2928,33 @@ function perform_restore_logic() {
         fi
     fi
 
-    # 7. [DB] 导入 MySQL (如果存在)
+    # 7. [DB] 导入 MySQL (修复核心：不再在宿主机解析密码)
     if [ -f "$restore_path/db.sql" ]; then
         echo " - 检测到 SQL 备份，准备导入..."
-        pwd=$(grep "MYSQL_ROOT_PASSWORD" docker-compose.yml | head -n 1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d "'" | tr -d '\r')
         
-        if [ ! -z "$pwd" ]; then
-            echo -n "   等待数据库就绪"
-            db_ready=0
-            for i in {1..30}; do
-                if docker compose exec -T db mysqladmin ping -h localhost -u root -p"$pwd" --silent >/dev/null 2>&1; then
-                    db_ready=1; break
-                fi
-                echo -n "."; sleep 2
-            done
-            echo ""
-            
-            if [ "$db_ready" -eq 1 ]; then
-                if docker compose exec -T db mysql -u root -p"$pwd" < "$restore_path/db.sql"; then
-                     echo -e "   ${GREEN}✔ 数据库导入成功${NC}"
-                else
-                     echo -e "   ${RED}❌ SQL 导入失败 (版本不兼容?)${NC}"
-                fi
+        # 等待数据库就绪
+        echo -n "   等待数据库启动"
+        db_ready=0
+        for i in {1..30}; do
+            # 尝试使用 exec 内部环境变量 ping，如果不报错则说明服务起来了
+            if docker compose exec -T db sh -c 'mysqladmin ping -h localhost -u root -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
+                db_ready=1; break
             fi
+            echo -n "."; sleep 2
+        done
+        echo ""
+        
+        if [ "$db_ready" -eq 1 ]; then
+            echo "   正在导入数据 (请勿中断)..."
+            # 【修复点】直接使用 sh -c 调用容器内的环境变量，避免特殊字符转义问题
+            if docker compose exec -T db sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" < /dev/stdin' < "$restore_path/db.sql"; then
+                 echo -e "   ${GREEN}✔ 数据库导入成功${NC}"
+            else
+                 echo -e "   ${RED}❌ SQL 导入失败!${NC}"
+                 echo -e "   可能原因: 1. SQL文件损坏 2. 数据库版本不兼容 3. 内存不足被杀进程"
+            fi
+        else
+            echo -e "${RED}❌ 数据库启动超时，跳过导入。${NC}"
         fi
     fi
     
@@ -2967,6 +2970,10 @@ function backup_restore_ops() {
     check_rclone
     local has_remote=0
     if rclone listremotes 2>/dev/null | grep -q "remote:"; then has_remote=1; fi
+    
+    # 确保本地备份目录存在
+    local local_backup_dir="$BASE_DIR/backups"
+    mkdir -p "$local_backup_dir"
 
     while true; do 
         clear; echo -e "${YELLOW}=== 📦 超级备份系统 (本地+云端) ===${NC}"
@@ -3010,6 +3017,8 @@ function backup_restore_ops() {
                 read -p "选择源 [1/2]: " src
                 
                 local backup_file=""
+                
+                # === 分支 2: 云端下载 ===
                 if [ "$src" == "2" ]; then
                     if [ "$has_remote" -eq 0 ]; then echo "未配置云端"; pause_prompt; continue; fi
                     rclone lsl "remote:wp_backups" | tail -n 10
@@ -3017,20 +3026,56 @@ function backup_restore_ops() {
                     echo "下载中..."
                     rclone copy "remote:wp_backups/$fname" "/tmp/"
                     backup_file="/tmp/$fname"
+                
+                # === 分支 1: 本地选择 (核心修复部分) ===
                 else
-                    ls -lh "$BASE_DIR/backups" 2>/dev/null
-                    read -p "输入本地文件全路径: " backup_file
+                    echo -e "${CYAN}=== 本地备份列表 ===${NC}"
+                    # 1. 获取所有 tar.gz 文件到数组
+                    files=("$local_backup_dir"/*.tar.gz)
+                    
+                    # 2. 检查是否有文件
+                    if [ ! -e "${files[0]}" ]; then
+                        echo -e "${RED}❌ 目录 $local_backup_dir 下没有找到备份文件。${NC}"
+                        pause_prompt
+                        continue
+                    fi
+
+                    # 3. 循环显示菜单
+                    local i=1
+                    for f in "${files[@]}"; do
+                        echo -e " $i. $(basename "$f")  \t [$(du -h "$f" | awk '{print $1}')]"
+                        ((i++))
+                    done
+                    echo "--------------------------------"
+                    
+                    # 4. 用户输入编号
+                    read -p "请输入文件编号: " choice
+                    
+                    # 5. 校验并获取完整路径
+                    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -lt "$i" ]; then
+                        # 数组下标从0开始，所以要减1
+                        backup_file="${files[$((choice-1))]}"
+                        echo -e "已选择: ${GREEN}$backup_file${NC}"
+                    else
+                        echo -e "${RED}无效的编号${NC}"
+                        pause_prompt
+                        continue
+                    fi
                 fi
 
+                # === 执行还原 ===
                 if [ -f "$backup_file" ]; then
-                    read -p "请输入要还原到的目标域名: " target_domain
-                    read -p "确认还原? (yes/no): " confirm
-                    if [ "$confirm" == "yes" ]; then
-                        perform_restore_logic "$backup_file" "$target_domain"
-                    fi
+                    ls -1 "$SITES_DIR"
+                    echo "--------------------------------"
+                    read -p "请输入要还原到的【目标域名】: " target_domain
+                    if [ -z "$target_domain" ]; then echo "域名不能为空"; pause_prompt; continue; fi
+                    
+                    perform_restore_logic "$backup_file" "$target_domain"
                 else
-                    echo "文件未找到"
+                    echo -e "${RED}错误：文件未找到 ($backup_file)${NC}"
                 fi
+                
+                # 如果是云端下载的临时文件，还原后清理
                 [ "$src" == "2" ] && rm -f "$backup_file"
                 pause_prompt
                 ;;
@@ -3516,4 +3561,3 @@ while true; do
         *) echo "无效选项"; sleep 1;;
     esac
 done
-
