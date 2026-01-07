@@ -2832,6 +2832,7 @@ function manage_remarks() {
     done
 }
 
+# === [修复版] HTTPS 证书高级管理中心 ===
 function cert_management() {
     # 依赖工具函数：计算剩余天数
     function get_cert_days() {
@@ -2844,7 +2845,7 @@ function cert_management() {
 
     while true; do
         clear
-        echo -e "${YELLOW}=== 🔐 HTTPS 证书高级管理中心 ===${NC}"
+        echo -e "${YELLOW}=== 🔐 HTTPS 证书高级管理中心 (Fix V2) ===${NC}"
         echo -e "核心网关: gateway_proxy | 签发容器: gateway_acme"
         echo "---------------------------------------------------------"
         echo -e " 1. ${GREEN}证书状态看板${NC} (显示过期时间/剩余天数)"
@@ -2853,7 +2854,7 @@ function cert_management() {
         echo " 4. 部署自定义证书 (上传 .crt 和 .key)"
         echo " 5. 删除/重置指定证书 (用于申请失败重试)"
         echo " 6. 备份所有证书到本地"
-        echo -e " 7. ${CYAN}重新申请/续签指定域名 (Re-issue Specific)${NC}" 
+        echo -e " 7. ${CYAN}强制重置并申请指定域名 (解决申请死循环)${NC}" 
         echo " 0. 返回上一级"
         echo "---------------------------------------------------------"
         read -p "请输入选项 [0-7]: " c
@@ -2900,8 +2901,9 @@ function cert_management() {
                 echo -e "${RED}⚠️  警告: 强制重签所有证书可能触发 Rate Limit。${NC}"
                 read -p "确认执行? (输入 renew 确认): " confirm
                 if [ "$confirm" == "renew" ]; then
+                    # 修复：使用官方推荐的 force_renew 脚本
                     docker exec gateway_acme /app/force_renew
-                    echo -e "${GREEN}✔ 命令已发送。${NC}"
+                    echo -e "${GREEN}✔ 命令已发送，请通过日志查看进度。${NC}"
                 fi
                 pause_prompt
                 ;;
@@ -2927,13 +2929,15 @@ function cert_management() {
                 
             5)
                 echo -e "${RED}>>> 删除证书 (彻底重置)${NC}"
-                echo "此操作会删除证书文件，如果不存了，ACME 容器会自动检测并尝试重新申请。"
                 read -p "请输入要删除的域名: " d
                 read -p "确认删除? (y/n): " confirm
                 if [ "$confirm" == "y" ]; then
+                    # 彻底删除证书文件
                     docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key" "/etc/nginx/certs/$d.chain.pem"
+                    # 重启 ACME 容器以触发状态检测
                     docker restart gateway_acme
-                    echo -e "${GREEN}✔ 已删除并重启 ACME 容器，请等待重新申请。${NC}"
+                    echo -e "${GREEN}✔ 已删除并重启 ACME 容器。${NC}"
+                    echo -e "提示：如果站点正在运行，ACME 容器稍后会自动检测到缺失并重新申请。"
                 fi
                 pause_prompt
                 ;;
@@ -2947,20 +2951,28 @@ function cert_management() {
                 ;;
 
             7)
-                echo -e "${YELLOW}>>> 强制重签指定域名 (Re-issue Specific)${NC}"
-                echo -e "此操作会调用 acme.sh 对指定域名进行强制续签 (--force)。"
+                echo -e "${YELLOW}>>> 强制重置并申请指定域名 (Smart Force)${NC}"
+                echo -e "原理: 删除旧证书 -> 重启 ACME -> 重启站点容器 (触发新申请)"
                 read -p "请输入域名: " d
                 if [ -z "$d" ]; then continue; fi
                 
-                echo -e "${CYAN}正在请求续签 $d ...${NC}"
-                # 尝试调用容器内的 acme.sh
-                if docker exec gateway_acme /etc/acme.sh/acme.sh --renew -d "$d" --force; then
-                    echo -e "${GREEN}✔ 续签命令执行成功！${NC}"
-                    echo "请稍后通过 [1] 查看证书过期时间是否更新。"
+                # 1. 强制删除容器内的旧证书
+                echo -e "${CYAN}1. 清理旧证书缓存...${NC}"
+                docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key"
+                
+                # 2. 重启 ACME 容器
+                echo -e "${CYAN}2. 重置签发服务...${NC}"
+                docker restart gateway_acme >/dev/null
+                
+                # 3. 触发站点信号
+                echo -e "${CYAN}3. 唤醒站点容器以触发申请...${NC}"
+                if [ -d "$SITES_DIR/$d" ]; then
+                    cd "$SITES_DIR/$d" && docker compose restart
+                    echo -e "${GREEN}✔ 信号已发送！${NC}"
+                    echo -e "请等待 30-60 秒，然后使用 [1] 查看证书是否生成。"
+                    echo -e "或者使用 [2] 查看详细日志。"
                 else
-                    echo -e "${RED}❌ 执行失败${NC}"
-                    echo "可能原因：证书尚未生成、域名解析错误或 ACME 服务器繁忙。"
-                    echo "建议尝试 [5] 删除证书后让其重新生成。"
+                    echo -e "${RED}❌ 找不到该站点的目录，无法重启容器。${NC}"
                 fi
                 pause_prompt
                 ;;
