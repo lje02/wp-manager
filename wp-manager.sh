@@ -751,8 +751,8 @@ function security_center() {
         if [ -z "$(ls -A $SITES_DIR)" ]; then
             WAF_ST="${YELLOW}● 无站点${NC}"
         else
-            if grep -r "V10.2" "$SITES_DIR" >/dev/null 2>&1; then 
-                WAF_ST="${GREEN}● 已部署 (增强版 V10.2)${NC}"
+            if grep -r "V10.3" "$SITES_DIR" >/dev/null 2>&1; then 
+                WAF_ST="${GREEN}● 已部署 (增强版 V10.3)${NC}"
             elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
                 WAF_ST="${YELLOW}● 已部署 (旧版)${NC}"
             else 
@@ -1738,9 +1738,10 @@ EOF
     done
 }
 
+# === [修复版] WAF 管理器 (移除网关专用变量) ===
 function waf_manager() { 
     while true; do 
-        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V10.2 Anti-Bot) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V10.3 Stable) ===${NC}"
         echo " 1. 部署/更新 究极防御规则"
         echo " 2. 查看当前规则内容"
         echo " 0. 返回上一级"
@@ -1749,16 +1750,14 @@ function waf_manager() {
         case $o in 
             0) return;; 
             1) 
-                echo -e "${BLUE}>>> 正在生成 V10.2 修正版规则...${NC}"
+                echo -e "${BLUE}>>> 正在生成 V10.3 稳定版规则...${NC}"
                 
+                # 修复核心：移除了 $block_bot 检查
+                # 爬虫拦截由网关负责，站点容器只负责防注入
                 cat >/tmp/w <<EOF
 # ==================================================
-#   V10.2 Ultimate WAF Rules (Fixed & Bot Block)
+#   V10.3 Ultimate WAF Rules (Site Level)
 # ==================================================
-
-# --- [0] 全局爬虫拦截 (配合 Traffic Manager) ---
-# 检查由 bots.conf 定义的 map 变量
-if (\$block_bot = 1) { return 403; }
 
 # --- [1] 系统与敏感文件保护 ---
 location ~* \.(engine|inc|info|install|make|module|profile|test|po|sh|.*sql|theme|tpl(\.php)?|xtmpl)$ { return 403; }
@@ -1801,9 +1800,9 @@ EOF
                         fi
 
                         cp /tmp/w "$d/waf.conf" 
-                        # 使用新的重启逻辑
+                        # 重启站点容器
                         cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1
-                        echo -e " - $(basename "$d"): ${GREEN}V10.2 规则已生效${NC}"
+                        echo -e " - $(basename "$d"): ${GREEN}V10.3 规则已生效${NC}"
                         ((count++))
                     fi 
                 done
