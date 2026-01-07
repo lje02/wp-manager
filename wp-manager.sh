@@ -2878,7 +2878,7 @@ function perform_backup_logic() {
     rm -rf "$temp_dir"
 }
 
-# === [V3.2 最终修正版] 核心还原逻辑 (智能避坑) ===
+# === [V3.3 终极修复版] 核心还原逻辑 (特殊字符兼容+强制TCP) ===
 function perform_restore_logic() {
     local backup_file=$1
     local target_domain=$2
@@ -2908,18 +2908,16 @@ function perform_restore_logic() {
     echo " - 恢复配置文件..."
     find "$restore_path" -maxdepth 1 -type f ! -name "*.tar.gz" ! -name "*.sql" -exec cp {} "$target_dir/" \;
 
-    # 4. [通用] 恢复本地 data 目录 (并检测是否包含数据库)
+    # 4. [通用] 恢复本地 data 目录
     local raw_db_restored=0
-    
     if [ -f "$restore_path/local_data.tar.gz" ]; then
         echo " - [通用] 恢复本地数据目录 (data)..."
         tar xzf "$restore_path/local_data.tar.gz" -C "$target_dir"
         
-        # === 核心判断：检查是否还原了数据库原始文件 ===
-        # 如果存在 mysql 目录，说明物理文件已恢复，无需再导 SQL
+        # 检查是否还原了原始数据库文件
         if [ -d "$target_dir/data/mysql" ] || [ -d "$target_dir/mysql" ] || [ -d "$target_dir/db_data" ]; then
             raw_db_restored=1
-            echo -e "${GREEN}   ✔ 检测到数据库原始文件(Raw Data)，数据库已随容器恢复。${NC}"
+            echo -e "${GREEN}   ✔ 检测到原始数据库文件，将跳过 SQL 导入。${NC}"
         fi
     fi
 
@@ -2937,38 +2935,40 @@ function perform_restore_logic() {
         fi
     fi
 
-    # 7. [DB] 导入 MySQL (智能模式)
+    # 7. [DB] 导入 MySQL (修复 Access Denied)
     if [ -f "$restore_path/db.sql" ]; then
         if [ "$raw_db_restored" -eq 1 ]; then
-            # === 情况 A: 原始文件存在 -> 跳过 SQL 导入 (解决报错的根源) ===
-            echo -e " - [DB] ${CYAN}跳过 SQL 导入 (检测到原始数据已恢复，避免密码冲突)。${NC}"
-            echo -e "        如果网站能正常访问，说明还原成功。"
+            echo -e " - [DB] ${CYAN}跳过 SQL 导入 (原始数据已恢复)。${NC}"
         else
-            # === 情况 B: 只有 SQL 文件 -> 必须导入 ===
             echo " - [DB] 检测到纯 SQL 备份，准备导入..."
             
             echo -n "   等待数据库启动"
             db_ready=0
-            # 增加重试次数到 60 次 (有些数据库启动很慢)
+            # 循环检查数据库状态
             for i in {1..60}; do
-                if docker compose exec -T db sh -c 'mysqladmin ping -h localhost -u root -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
+                # 使用 MYSQL_PWD 避免特殊字符干扰，强制使用 127.0.0.1 走 TCP 协议
+                if docker compose exec -T db sh -c 'export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; mysqladmin ping -h 127.0.0.1 -u root --silent' >/dev/null 2>&1; then
                     db_ready=1; break
                 fi
                 echo -n "."
-                sleep 1
+                sleep 2
             done
             echo ""
             
             if [ "$db_ready" -eq 1 ]; then
-                echo "   正在导入数据..."
-                if docker compose exec -T db sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" < /dev/stdin' < "$restore_path/db.sql"; then
+                echo "   正在导入数据 (请勿中断)..."
+                # 再次等待 3 秒，防止 MySQL 刚 responding ping 但还没准备好接收 write
+                sleep 3
+                
+                # 【关键修复】使用 MYSQL_PWD 传递密码，使用 -h 127.0.0.1 强制 TCP
+                if docker compose exec -T db sh -c 'export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; mysql -h 127.0.0.1 -u root < /dev/stdin' < "$restore_path/db.sql"; then
                      echo -e "   ${GREEN}✔ 数据库导入成功${NC}"
                 else
-                     echo -e "   ${RED}❌ SQL 导入失败 (密码错误或权限拒绝)${NC}"
-                     echo -e "   提示: 请检查 docker-compose.yml 中的密码是否与备份时一致。"
+                     echo -e "   ${RED}❌ SQL 导入失败!${NC}"
+                     echo -e "   请尝试手动导入: docker compose exec db mysql -u root -p (回车输密码)"
                 fi
             else
-                echo -e "${RED}❌ 数据库启动超时，无法连接。${NC}"
+                echo -e "${RED}❌ 数据库启动超时。${NC}"
             fi
         fi
     fi
