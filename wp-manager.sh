@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.3(快捷方式: mmp)"
+VERSION="V10.3.1(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -401,17 +401,30 @@ EOF
 chmod +x "$LISTENER_SCRIPT"
 }
 
-# === [新增] 强制刷新网关配置 ===
+# === [修复版] 强制刷新网关配置 ===
 function reload_gateway_config() {
     echo -e "${YELLOW}>>> 正在同步网关配置...${NC}"
-    # 1. 稍微等一下，确保新容器的网络已经完全连通
-    sleep 3
-    # 2. 发送重载信号 (不会断开现有连接)
+    
+    # 原理：直接重启网关容器。
+    # 这会强制 nginx-proxy 重新扫描所有正在运行的容器，并重新生成配置文件。
+    # 虽然会有 1-2 秒的短暂中断，但能保证新网站 100% 连通。
+    
     if docker ps | grep -q "gateway_proxy"; then
-        docker exec gateway_proxy nginx -s reload >/dev/null 2>&1
-        echo -e "${GREEN}✔ 网关路由表已刷新${NC}"
+        # 1. 尝试重启网关
+        docker restart gateway_proxy >/dev/null 2>&1
+        
+        # 2. 稍微等待一下，让 Nginx 启动完成
+        sleep 2
+        
+        # 3. 顺便踢一下 ACME 容器，让它看看有没有新证书要申请
+        if docker ps | grep -q "gateway_acme"; then
+             docker restart gateway_acme >/dev/null 2>&1
+        fi
+        
+        echo -e "${GREEN}✔ 网关已重启，新站点应即刻生效${NC}"
     else
-        echo -e "${RED}⚠️  警告: 网关容器未运行，跳过刷新${NC}"
+        echo -e "${RED}⚠️  警告: 网关容器(gateway_proxy)未运行，无法刷新${NC}"
+        echo -e "请尝试执行菜单 [99] 重建网关。"
     fi
 }
 
