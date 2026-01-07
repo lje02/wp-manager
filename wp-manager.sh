@@ -3654,7 +3654,7 @@ function db_admin_tool() {
 function show_menu() {
     clear
     echo -e "${GREEN}=== Docker 智能部署系统 ($VERSION) ===${NC}"
-    echo -e "${RED}=== 仅供个人使用，请勿用于生产 ===${NC}" 
+    echo -e "${RED}=== 仅供个人使用，请勿用于生产环境 ===${NC}" 
 	echo "----------------------------------------------------------------"
     
     # --- 1. 部署中心 ---
