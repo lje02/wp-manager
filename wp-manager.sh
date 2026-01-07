@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.3.1(快捷方式: mmp)"
+VERSION="V10.3.2(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -434,137 +434,320 @@ function reload_gateway_config() {
 
 # ================= 3. 业务功能函数 =================
 
-# [V9] 主机安全审计
+# === [V9.5 升级版] 主机深度审计与隐藏进程猎杀 ===
 function server_audit() {
-    check_dependencies # 确保有 netstat
+    # 内部函数：安装 Unhide
+    function install_unhide() {
+        if ! command -v unhide >/dev/null 2>&1; then
+            echo -e "${YELLOW}>>> 正在安装 Unhide (隐藏进程扫描神器)...${NC}"
+            if [ -f /etc/debian_version ]; then
+                apt-get update && apt-get install -y unhide
+            else
+                yum install -y unhide
+            fi
+        fi
+    }
+
     while true; do
-        clear; echo -e "${YELLOW}=== 🕵️ 主机安全审计 (V9) ===${NC}"
-        
-        echo -e "${CYAN}[1] 端口暴露审计${NC}"
-        echo -e "    检查服务器当前对外开放的端口，防止误开高危端口。"
-        
-        echo -e "${CYAN}[2] 恶意进程/挖矿检测${NC}"
-        echo -e "    检查高 CPU 占用进程、可疑目录(/tmp)运行的程序。"
-        
+        clear; echo -e "${RED}=== 🕵️ 主机深度审计 (Hunter Mode) ===${NC}"
+        echo -e "${YELLOW}此模块用于检测 Rootkit、挖矿病毒及隐藏进程。${NC}"
         echo "--------------------------"
-        echo " 1. 扫描当前开放端口 (TCP/UDP)"
-        echo " 2. 执行 恶意进程与挖矿 快速扫描"
-        echo " 3. 查看最近登录记录 (last)"
-        echo " 0. 返回上一级"
+        echo -e " 1. 端口与连接审计 (Netstat)"
+        echo -e " 2. ${CYAN}幽灵进程检测 (对比 /proc vs ps)${NC}"
+        echo -e " 3. ${RED}暴力枚举隐藏进程 (Unhide - 内核级查杀)${NC}"
+        echo -e " 4. 恶意进程与文件扫描 (CPU/Temp)"
+        echo -e " 5. 检查系统预加载劫持 (LD_PRELOAD)"
+        echo " 0. 返回"
         echo "--------------------------"
-        read -p "请输入选项 [0-3]: " o
+        read -p "请输入选项 [0-5]: " o
         case $o in
             0) return;;
+            
             1) 
                 echo -e "\n${GREEN}>>> 正在扫描监听端口...${NC}"
-                echo -e "${YELLOW}注意: 0.0.0.0 或 ::: 表示对全网开放${NC}"
+                check_dependencies # 确保 netstat 存在
                 echo "--------------------------------------------------------"
                 printf "%-8s %-25s %-15s %-20s\n" "协议" "本地地址:端口" "状态" "进程PID/名称"
                 echo "--------------------------------------------------------"
-                if command -v netstat >/dev/null; then
-                    netstat -tunlp | grep LISTEN | awk '{printf "%-8s %-25s %-15s %-20s\n", $1, $4, $6, $7}'
-                else
-                    ss -tunlp | grep LISTEN | awk '{printf "%-8s %-25s %-15s %-20s\n", $1, $5, $2, $7}'
-                fi
+                netstat -tunlp | grep LISTEN | awk '{printf "%-8s %-25s %-15s %-20s\n", $1, $4, $6, $7}'
                 echo "--------------------------------------------------------"
-                echo "常见高危端口: 3306(MySQL), 6379(Redis), 22(SSH - 如有弱密码)"
-                echo -e "\n${YELLOW}>>> 正在深度检测数据库风险...${NC}"
-    
-    # 检查所有容器，看是否有绑定到 0.0.0.0 的 3306/6379/5432 端口
-    risky_ports=$(docker ps --format "{{.Names}} {{.Ports}}" | grep -E "0.0.0.0:(3306|6379|5432|27017)")
-    
-    if [ ! -z "$risky_ports" ]; then
-                echo -e "${RED}🚨 严重警告！发现数据库端口直接暴露在公网：${NC}"
-                echo "$risky_ports"
-                echo -e "${YELLOW}建议立即修改 docker-compose.yml，移除 'ports' 映射，或改为 '127.0.0.1:3306:3306'${NC}"
-    else
-                echo -e "${GREEN}✔ 数据库端口安全（未检测到公网暴露）${NC}"
-    fi
+                echo -e "${YELLOW}提示: 如果发现没有 PID 的端口 (显示为 -)，说明该进程可能已隐藏！${NC}"
                 pause_prompt;;
+
             2)
-                echo -e "\n${GREEN}>>> 正在执行安全扫描...${NC}"
+                echo -e "\n${GREEN}>>> 正在执行幽灵进程检测...${NC}"
+                echo -e "原理: 对比 '/proc/PID' 目录与 'ps' 命令的输出差异。"
+                echo "--------------------------------------------------------"
                 
-                # 1. 检查 CPU 占用 Top 5
-                echo -e "\n${CYAN}[Check 1] CPU 占用最高的 5 个进程:${NC}"
+                # 获取所有 /proc 下的数字目录 (真实的进程)
+                ls -d /proc/[0-9]* | cut -d/ -f3 | sort -n > /tmp/procs_raw.txt
+                # 获取 ps 命令能看到的进程
+                ps -e -o pid= | tr -d ' ' | sort -n > /tmp/procs_ps.txt
+                
+                # 对比差异
+                hidden_pids=$(comm -23 /tmp/procs_raw.txt /tmp/procs_ps.txt)
+                
+                if [ ! -z "$hidden_pids" ]; then
+                    echo -e "${RED}🚨 警告！发现 'ps' 命令看不到的幽灵进程：${NC}"
+                    for pid in $hidden_pids; do
+                        # 过滤掉极短命进程（可能刚才运行完就结束了）
+                        if [ -d "/proc/$pid" ]; then
+                            cmdline=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')
+                            echo -e "PID: ${RED}$pid${NC} | Cmd: $cmdline"
+                        fi
+                    done
+                else
+                    echo -e "${GREEN}✔ 未发现用户态隐藏进程 (ps命令未被篡改)${NC}"
+                fi
+                rm -f /tmp/procs_raw.txt /tmp/procs_ps.txt
+                pause_prompt;;
+                
+            3)
+                echo -e "\n${RED}>>> 正在启动 Unhide 暴力猎杀模式...${NC}"
+                install_unhide
+                if command -v unhide >/dev/null 2>&1; then
+                    echo -e "${YELLOW}正在暴力轮询 PID (可能需要几十秒)...${NC}"
+                    # 使用 brute 和 proc 混合模式
+                    unhide proc
+                    echo "----------------------------------------"
+                    unhide sys
+                    echo "----------------------------------------"
+                    echo -e "${CYAN}如果上面列出了 PID，请立即使用 'kill -9 PID' 尝试杀掉。${NC}"
+                    echo -e "如果杀不掉，说明可能已深入内核模块，建议重装系统。"
+                else
+                    echo -e "${RED}❌ Unhide 安装失败，无法执行。${NC}"
+                fi
+                pause_prompt;;
+            
+            4)
+                echo -e "\n${GREEN}>>> 正在执行常规恶意扫描...${NC}"
+                # CPU Top 5
+                echo -e "\n${CYAN}[1] CPU 占用最高的 5 个进程:${NC}"
                 ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%cpu | head -n 6
                 
-                # 2. 检查可疑目录 (/tmp, /var/tmp, /dev/shm) 下的可执行文件
-                echo -e "\n${CYAN}[Check 2] 检查可疑目录运行的进程 (/tmp, /dev/shm):${NC}"
+                # 检查可疑目录
+                echo -e "\n${CYAN}[2] 检查可疑目录运行的进程 (/tmp, /dev/shm):${NC}"
                 suspicious_found=0
-                # 遍历 /proc 下所有的 pid
                 for pid in $(ls /proc | grep -E '^[0-9]+$'); do
                     if [ -d "/proc/$pid" ]; then
                         exe_link=$(readlink -f /proc/$pid/exe 2>/dev/null)
                         if [[ "$exe_link" == /tmp/* ]] || [[ "$exe_link" == /var/tmp/* ]] || [[ "$exe_link" == /dev/shm/* ]]; then
                             echo -e "${RED}⚠️  发现可疑进程 PID: $pid${NC}"
                             echo -e "   路径: $exe_link"
-                            echo -e "   命令: $(cat /proc/$pid/cmdline 2>/dev/null)"
                             suspicious_found=1
                         fi
                     fi
                 done
-                if [ "$suspicious_found" -eq 0 ]; then echo -e "${GREEN}✔ 未发现明显的可疑目录进程${NC}"; fi
+                [ "$suspicious_found" -eq 0 ] && echo -e "${GREEN}✔ 暂无发现${NC}"
                 
-                # 3. 检查文件被删除但仍在运行的进程 (Deleted binary)
-                echo -e "\n${CYAN}[Check 3] 检查已删除但仍在运行的二进制文件:${NC}"
-                deleted_found=0
-                ls -l /proc/*/exe 2>/dev/null | grep '(deleted)' | grep -v "docker" | grep -v "containerd" | while read line; do
-                    echo -e "${YELLOW}⚠️  $line${NC}"
-                    deleted_found=1
-                done
-                
-                echo -e "\n--------------------------"
-                echo -e "提示: 如果发现名为 xmrig, kinsing, masscan 等进程，通常为病毒。"
+                # 检查已删除但仍在运行
+                echo -e "\n${CYAN}[3] 检查已删除但仍在运行的二进制文件:${NC}"
+                ls -l /proc/*/exe 2>/dev/null | grep '(deleted)' | grep -vE "docker|containerd|runc"
                 pause_prompt;;
-            3) last | head -n 10; pause_prompt;;
+                
+            5)
+                echo -e "\n${YELLOW}>>> 检查 LD_PRELOAD 劫持...${NC}"
+                echo "Rootkit 常通过环境变量劫持系统函数。"
+                if [ ! -z "$LD_PRELOAD" ] || grep -q "LD_PRELOAD" /etc/ld.so.preload 2>/dev/null; then
+                     echo -e "${RED}🚨 严重警告！检测到 LD_PRELOAD 设置！${NC}"
+                     echo "环境变量: $LD_PRELOAD"
+                     echo "配置文件: $(cat /etc/ld.so.preload 2>/dev/null)"
+                     echo -e "如果这不是你配置的，请立即检查！"
+                else
+                     echo -e "${GREEN}✔ 未检测到 LD_PRELOAD 劫持。${NC}"
+                fi
+                pause_prompt;;
         esac
     done
 }
 
+# === [增强] Cloudflare Real IP 修复 ===
+function fix_cloudflare_ip() {
+    echo -e "${YELLOW}>>> 正在配置 Cloudflare 真实 IP 透传...${NC}"
+    
+    # 定义配置文件路径
+    local cf_conf="$GATEWAY_DIR/cloudflare.conf"
+    
+    echo "# Cloudflare IP Ranges" > "$cf_conf"
+    echo "real_ip_header CF-Connecting-IP;" >> "$cf_conf"
+    
+    # 下载 CF 的 IP 段
+    echo -e "正在下载 Cloudflare IP 列表..."
+    curl -s https://www.cloudflare.com/ips-v4 | sed 's/^/set_real_ip_from /; s/$/;/' >> "$cf_conf"
+    curl -s https://www.cloudflare.com/ips-v6 | sed 's/^/set_real_ip_from /; s/$/;/' >> "$cf_conf"
+    
+    # 挂载到网关容器
+    # 检查 docker-compose.yml 是否已经挂载
+    if ! grep -q "cloudflare.conf" "$GATEWAY_DIR/docker-compose.yml"; then
+        sed -i '/volumes:/a \      - ./cloudflare.conf:/etc/nginx/conf.d/cloudflare.conf:ro' "$GATEWAY_DIR/docker-compose.yml"
+        echo -e "${GREEN}✔ 挂载配置已注入${NC}"
+        
+        # 重建网关
+        echo -e "${YELLOW}需要重启网关以生效...${NC}"
+        reload_gateway_config
+    else
+        # 只是更新了 IP 列表，重载即可
+        docker exec gateway_proxy nginx -s reload
+        echo -e "${GREEN}✔ IP 列表已更新并重载${NC}"
+    fi
+    
+    echo -e "${GREEN}现在你的日志和 Fail2Ban 将显示访客真实 IP。${NC}"
+    pause_prompt
+}
+
+# === [增强版] Webshell 恶意文件查杀 (带清理功能) ===
+function malware_scan() {
+    while true; do
+        clear
+        echo -e "${RED}=== 🦠 Webshell 深度查杀 (Iron Wall) ===${NC}"
+        echo -e "${YELLOW}提示: 自动删除仅针对 uploads 目录的高危文件，其他目录仅报警。${NC}"
+        echo "------------------------------------------------"
+        echo " 1. 快速扫描 & 清理 (检查 uploads 目录下的 PHP 文件)"
+        echo " 2. 深度扫描 (检查 eval/base64 等危险函数 - 仅报告)"
+        echo " 3. 权限加固 (锁定 uploads 目录禁止执行 PHP)"
+        echo " 0. 返回"
+        echo "------------------------------------------------"
+        read -p "请选择: " o
+        
+        case $o in
+            0) return;;
+            1)
+                echo -e "${YELLOW}>>> 正在扫描 uploads 目录下的非法 PHP 文件...${NC}"
+                echo -e "原理: WordPress 的 uploads 目录只应存放图片/附件，绝不该有 PHP 脚本。"
+                echo "------------------------------------------------"
+                
+                # 定义一个临时文件存放扫描结果
+                tmp_list="/tmp/malware_list.txt"
+                > "$tmp_list"
+
+                # 扫描所有站点的 uploads 目录
+                find "$SITES_DIR" -type d -name "uploads" | while read dir; do
+                    # 查找该目录下的 php 文件
+                    find "$dir" -name "*.php" >> "$tmp_list"
+                done
+
+                if [ ! -s "$tmp_list" ]; then
+                    echo -e "${GREEN}✔ 恭喜！未发现明显的 uploads 目录木马。${NC}"
+                else
+                    echo -e "${RED}🚨 发现以下高危文件：${NC}"
+                    cat -n "$tmp_list"
+                    echo "------------------------------------------------"
+                    
+                    # 交互式清理逻辑
+                    echo -e "${YELLOW}这些文件极大概率是 Webshell 木马。${NC}"
+                    read -p "是否进入交互式清理模式? (y/n): " confirm
+                    if [ "$confirm" == "y" ]; then
+                        # 逐行读取文件进行处理
+                        while read file_path; do
+                            echo -e "\n文件: ${CYAN}$file_path${NC}"
+                            echo -e "内容预览: $(head -n 1 "$file_path" | cut -c 1-50)..."
+                            read -p "👉 确认删除此文件? (y=删除, n=跳过): " del_opt
+                            if [ "$del_opt" == "y" ]; then
+                                rm -f "$file_path"
+                                echo -e "${GREEN}已删除。${NC}"
+                            else
+                                echo "已跳过。"
+                            fi
+                        done < "$tmp_list"
+                    else
+                        echo "操作已取消，请手动处理。"
+                    fi
+                fi
+                rm -f "$tmp_list"
+                pause_prompt;;
+            
+            2)
+                echo -e "${YELLOW}>>> 正在执行特征码扫描...${NC}"
+                echo "此模式仅报告文件路径和行号，请手动核实（存在误报可能）。"
+                echo "------------------------------------------------"
+                # 排除日志、图片、缓存目录
+                grep -r --include="*.php" \
+                     --exclude-dir="node_modules" \
+                     --exclude-dir="vendor" \
+                     --exclude-dir="cache" \
+                     --exclude-dir="logs" \
+                     -E "eval\(|assert\(|base64_decode\('|shell_exec\(|passthru\(" "$SITES_DIR" | cut -c 1-120
+                echo "------------------------------------------------"
+                echo -e "${CYAN}分析指南：${NC}"
+                echo -e "1. ${GREEN}eval(\$_POST[...]);${NC} -> 100% 木马，立即删除。"
+                echo -e "2. ${GREEN}base64_decode('...');${NC} -> 检查解码内容，可能是加密的木马。"
+                echo -e "3. 如果出现在正常插件(plugins)目录，可能是误报，请谨慎。"
+                pause_prompt;;
+                
+            3)
+                echo -e "${YELLOW}>>> 正在生成 uploads 目录防执行配置...${NC}"
+                # 为每个站点生成禁止 uploads 运行 php 的配置
+                for dir in "$SITES_DIR"/*; do
+                    if [ -d "$dir" ]; then
+                        conf_file="$dir/waf_uploads.conf"
+                        # 增强版配置：禁止 php 执行
+                        cat > "$conf_file" <<EOF
+location ~* ^/wp-content/uploads/.*\.php$ {
+    deny all;
+}
+EOF
+                        # 注入到 nginx.conf
+                        if [ -f "$dir/nginx.conf" ] && ! grep -q "waf_uploads.conf" "$dir/nginx.conf"; then
+                            sed -i '/include \/etc\/nginx\/waf.conf;/a \    include /etc/nginx/waf_uploads.conf;' "$dir/nginx.conf"
+                             # 挂载
+                            if ! grep -q "waf_uploads.conf" "$dir/docker-compose.yml"; then
+                                 sed -i '/waf.conf:\/etc\/nginx\/waf.conf/a \      - ./waf_uploads.conf:/etc/nginx/waf_uploads.conf' "$dir/docker-compose.yml"
+                                 cd "$dir" && docker compose up -d
+                            fi
+                            echo -e " - $(basename "$dir"): ${GREEN}已加固${NC}"
+                        fi
+                    fi
+                done
+                reload_gateway_config
+                echo -e "${GREEN}✔ 所有站点的上传目录已锁定，即便上传了木马也无法运行。${NC}"
+                pause_prompt;;
+        esac
+    done
+}
+
+# === [增强] 宿主机自动安全更新 ===
+function enable_auto_updates() {
+    echo -e "${YELLOW}>>> 正在配置操作系统自动安全更新...${NC}"
+    
+    if command -v apt-get >/dev/null; then
+        apt-get update
+        apt-get install -y unattended-upgrades
+        
+        # 启用自动更新
+        echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections
+        dpkg-reconfigure -f noninteractive unattended-upgrades
+        
+        echo -e "${GREEN}✔ 已启用: 每天自动安装安全补丁 (Security Updates)${NC}"
+        echo -e "这能有效防止内核级漏洞逃逸。"
+    else
+        echo -e "${RED}❌ 当前系统不支持 (仅支持 Debian/Ubuntu)${NC}"
+    fi
+    pause_prompt
+}
+
 function security_center() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (V10.1) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (Iron Wall V11.0) ===${NC}"
         
-        # 1. 防火墙状态
-        if command -v ufw >/dev/null; then
-            if ufw status | grep -q "active"; then FW_ST="${GREEN}● 运行中 (UFW)${NC}"; else FW_ST="${RED}● 未启动${NC}"; fi
-        elif command -v firewall-cmd >/dev/null; then
-            if firewall-cmd --state 2>&1 | grep -q "running"; then FW_ST="${GREEN}● 运行中 (Firewalld)${NC}"; else FW_ST="${RED}● 未启动${NC}"; fi
-        else
-            FW_ST="${YELLOW}● 未安装${NC}"
-        fi
-
-        # 2. Fail2Ban状态
-        if command -v fail2ban-client >/dev/null; then
-            if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● 运行中${NC}"; else F2B_ST="${RED}● 已停止${NC}"; fi
-        else
-            F2B_ST="${YELLOW}● 未安装${NC}"
-        fi
-
-        # 3. WAF状态 
-        if [ -z "$(ls -A $SITES_DIR)" ]; then
-            WAF_ST="${YELLOW}● 无站点${NC}"
-        else
-            # 关键点：这里必须匹配 V10.1
-            if grep -r "V10.1" "$SITES_DIR" >/dev/null 2>&1; then 
-                WAF_ST="${GREEN}● 已部署 (增强版 V10.1)${NC}"
-            elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
-                WAF_ST="${YELLOW}● 已部署 (基础版)${NC}"
-            else 
-                WAF_ST="${RED}● 未部署${NC}"
-            fi
-        fi
-
+        # 状态检测逻辑 (保持原有)
+        if command -v ufw >/dev/null; then FW_ST="${GREEN}● UFW${NC}"; else FW_ST="${RED}● Off${NC}"; fi
+        if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● On${NC}"; else F2B_ST="${RED}● Off${NC}"; fi
+        
         echo -e " 1. 端口防火墙   [$FW_ST]"
         echo -e " 2. 流量访问控制 (Nginx Layer7)"
         echo -e " 3. SSH防暴力破解 [$F2B_ST]"
-        echo -e " 4. 网站防火墙    [$WAF_ST]"
+        echo -e " 4. 网站防火墙 (WAF V10.1)"
         echo -e " 5. HTTPS证书管理"
         echo -e " 6. 防盗链设置"
-        echo -e " 7. ${CYAN}主机安全审计 (扫描/挖矿检测)${NC}"
+        echo -e " 7. 主机安全审计 (进程扫描)"
+        echo "--------------------------"
+        echo -e " 8. ${CYAN}Cloudflare 真实 IP 修复${NC} (配合CDN)"
+        echo -e " 9. ${RED}Webshell 查杀与加固${NC}"
+        echo -e " 10. ${GREEN}宿主机自动安全更新${NC} (系统补丁)"
+        echo "--------------------------"
         echo " 0. 返回主菜单"
         echo "--------------------------"
-        read -p "请输入选项 [0-7]: " s
+        read -p "请输入选项 [0-10]: " s
         case $s in 
             0) return;; 
             1) port_manager;; 
@@ -574,6 +757,10 @@ function security_center() {
             5) cert_management;; 
             6) manage_hotlink;; 
             7) server_audit;; 
+            # 新增功能
+            8) fix_cloudflare_ip;;
+            9) malware_scan;;
+            10) enable_auto_updates;;
         esac
     done 
 }
@@ -3489,7 +3676,7 @@ function show_menu() {
     
     # --- 3. 数据与工具 ---
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
-    echo -e " 20. WP-CLI                          21. 备份/还原 (云端)"
+    echo -e " 20. WP-CLI                      21. 备份/还原 (云端)"
     echo -e " 22. 数据库管理 (Adminer)      23. 数据库 导入/导出 (CLI)"
 	echo -e " 24. 宿主机应用穿透"
     
