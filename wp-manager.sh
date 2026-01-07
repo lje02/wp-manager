@@ -561,37 +561,48 @@ function server_audit() {
     done
 }
 
-# === [增强] Cloudflare Real IP 修复 ===
+# === [修复版] Cloudflare Real IP 修复 ===
 function fix_cloudflare_ip() {
     echo -e "${YELLOW}>>> 正在配置 Cloudflare 真实 IP 透传...${NC}"
     
-    # 定义配置文件路径
     local cf_conf="$GATEWAY_DIR/cloudflare.conf"
+    local yml_file="$GATEWAY_DIR/docker-compose.yml"
     
+    # 1. 生成配置文件
     echo "# Cloudflare IP Ranges" > "$cf_conf"
     echo "real_ip_header CF-Connecting-IP;" >> "$cf_conf"
-    
-    # 下载 CF 的 IP 段
     echo -e "正在下载 Cloudflare IP 列表..."
     curl -s https://www.cloudflare.com/ips-v4 | sed 's/^/set_real_ip_from /; s/$/;/' >> "$cf_conf"
     curl -s https://www.cloudflare.com/ips-v6 | sed 's/^/set_real_ip_from /; s/$/;/' >> "$cf_conf"
     
-    # 挂载到网关容器
-    # 检查 docker-compose.yml 是否已经挂载
-    if ! grep -q "cloudflare.conf" "$GATEWAY_DIR/docker-compose.yml"; then
-        sed -i '/volumes:/a \      - ./cloudflare.conf:/etc/nginx/conf.d/cloudflare.conf:ro' "$GATEWAY_DIR/docker-compose.yml"
+    # 2. 精准挂载 (修复 YAML 格式错误)
+    if ! grep -q "cloudflare.conf" "$yml_file"; then
+        echo -e "${YELLOW}正在修改 docker-compose.yml...${NC}"
+        
+        # 备份原文件
+        cp "$yml_file" "$yml_file.bak"
+        
+        # 逻辑：寻找 "conf:/etc/nginx/conf.d" 这一行（这是网关肯定有的），在它下面插入新行
+        # 这样能保证缩进和位置绝对正确
+        sed -i '\|conf:/etc/nginx/conf.d|a \      - ./cloudflare.conf:/etc/nginx/conf.d/cloudflare.conf:ro' "$yml_file"
+        
         echo -e "${GREEN}✔ 挂载配置已注入${NC}"
         
-        # 重建网关
-        echo -e "${YELLOW}需要重启网关以生效...${NC}"
-        reload_gateway_config
+        # 3. 验证并重启
+        # 先尝试 config 检查，如果报错则还原
+        if ! docker compose -f "$yml_file" config >/dev/null 2>&1; then
+             echo -e "${RED}❌ YAML 语法校验失败，正在回滚...${NC}"
+             mv "$yml_file.bak" "$yml_file"
+             echo -e "请尝试手动编辑 $yml_file 添加挂载。"
+        else
+             rm "$yml_file.bak"
+             reload_gateway_config
+        fi
     else
-        # 只是更新了 IP 列表，重载即可
         docker exec gateway_proxy nginx -s reload
-        echo -e "${GREEN}✔ IP 列表已更新并重载${NC}"
+        echo -e "${GREEN}✔ 配置已更新并重载${NC}"
     fi
     
-    echo -e "${GREEN}现在你的日志和 Fail2Ban 将显示访客真实 IP。${NC}"
     pause_prompt
 }
 
