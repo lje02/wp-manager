@@ -401,30 +401,34 @@ EOF
 chmod +x "$LISTENER_SCRIPT"
 }
 
-# === [修复版] 强制刷新网关配置 ===
+# === [修复版] 强制刷新网关配置 (带延迟等待) ===
 function reload_gateway_config() {
     echo -e "${YELLOW}>>> 正在同步网关配置...${NC}"
     
-    # 原理：直接重启网关容器。
-    # 这会强制 nginx-proxy 重新扫描所有正在运行的容器，并重新生成配置文件。
-    # 虽然会有 1-2 秒的短暂中断，但能保证新网站 100% 连通。
-    
+    # 1. 【核心修复】强制等待 5 秒
+    # 让新启动的容器有足够的时间完成网络注册和 IP 分配
+    # 否则网关重启太快，会读不到新容器的 IP，导致 502 或 404
+    echo -n "   等待新容器网络就绪 (5秒)..."
+    for i in {1..5}; do 
+        echo -n "."
+        sleep 1
+    done
+    echo ""
+
     if docker ps | grep -q "gateway_proxy"; then
-        # 1. 尝试重启网关
+        # 2. 强制重启网关
+        # Restart 比 reload 更彻底，它会强制 nginx-proxy 重新扫描整个 Docker 网络
         docker restart gateway_proxy >/dev/null 2>&1
         
-        # 2. 稍微等待一下，让 Nginx 启动完成
-        sleep 2
-        
-        # 3. 顺便踢一下 ACME 容器，让它看看有没有新证书要申请
+        # 3. 连带重启 ACME
+        # 网关重启后，ACME 容器有时会断开 Socket 连接，顺手重启它最稳妥
         if docker ps | grep -q "gateway_acme"; then
              docker restart gateway_acme >/dev/null 2>&1
         fi
         
-        echo -e "${GREEN}✔ 网关已重启，新站点应即刻生效${NC}"
+        echo -e "${GREEN}✔ 网关已重启，新站点路由已生效${NC}"
     else
-        echo -e "${RED}⚠️  警告: 网关容器(gateway_proxy)未运行，无法刷新${NC}"
-        echo -e "请尝试执行菜单 [99] 重建网关。"
+        echo -e "${RED}⚠️  警告: 网关容器未运行，跳过刷新${NC}"
     fi
 }
 
@@ -3485,7 +3489,7 @@ function show_menu() {
     
     # --- 3. 数据与工具 ---
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
-    echo -e " 20. WP-CLI                    21. 备份/还原 (云端)"
+    echo -e " 20. WP-CLI                          21. 备份/还原 (云端)"
     echo -e " 22. 数据库管理 (Adminer)      23. 数据库 导入/导出 (CLI)"
 	echo -e " 24. 宿主机应用穿透"
     
