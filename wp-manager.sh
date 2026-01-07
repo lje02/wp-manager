@@ -3485,7 +3485,7 @@ function show_menu() {
     
     # --- 3. 数据与工具 ---
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
-    echo -e " 20. WP-CLI                      21. 备份/还原 (云端)"
+    echo -e " 20. WP-CLI                    21. 备份/还原 (云端)"
     echo -e " 22. 数据库管理 (Adminer)      23. 数据库 导入/导出 (CLI)"
 	echo -e " 24. 宿主机应用穿透"
     
