@@ -2878,8 +2878,7 @@ function perform_backup_logic() {
     rm -rf "$temp_dir"
 }
 
-# === [V3.0 修正版] 核心还原逻辑 ===
-# === [V3.1 增强版] 核心还原逻辑 (修复 Access denied) ===
+# === [V3.2 最终修正版] 核心还原逻辑 (智能避坑) ===
 function perform_restore_logic() {
     local backup_file=$1
     local target_domain=$2
@@ -2897,10 +2896,9 @@ function perform_restore_logic() {
     tar xzf "$backup_file" -C /tmp
     local restore_path="/tmp/$tar_dir"
 
-    # 2. 彻底清理旧环境 (关键步骤：防止密码冲突)
+    # 2. 彻底清理旧环境
     if [ -d "$target_dir" ]; then
-        echo " - 正在清理旧环境 (Stop & Remove)..."
-        # 强制停止并删除容器、网络和关联的数据卷
+        echo " - 正在清理旧环境..."
         cd "$target_dir" && docker compose down -v --remove-orphans >/dev/null 2>&1
         cd "$BASE_DIR" && rm -rf "$target_dir"
     fi
@@ -2910,17 +2908,18 @@ function perform_restore_logic() {
     echo " - 恢复配置文件..."
     find "$restore_path" -maxdepth 1 -type f ! -name "*.tar.gz" ! -name "*.sql" -exec cp {} "$target_dir/" \;
 
-    # 4. [通用] 恢复本地 data 目录
-    # 标记是否恢复了原始数据
-    local has_raw_data=0
+    # 4. [通用] 恢复本地 data 目录 (并检测是否包含数据库)
+    local raw_db_restored=0
+    
     if [ -f "$restore_path/local_data.tar.gz" ]; then
         echo " - [通用] 恢复本地数据目录 (data)..."
         tar xzf "$restore_path/local_data.tar.gz" -C "$target_dir"
         
-        # 检查是否包含 mysql 数据，如果包含，则标记
-        if [ -d "$target_dir/data/mysql" ] || [ -d "$target_dir/mysql" ] || grep -q "volumes:.*- .*mysql" "$target_dir/docker-compose.yml"; then
-            has_raw_data=1
-            echo -e "${CYAN}   ℹ️  检测到原始数据库文件，将跳过 SQL 导入以避免密码冲突。${NC}"
+        # === 核心判断：检查是否还原了数据库原始文件 ===
+        # 如果存在 mysql 目录，说明物理文件已恢复，无需再导 SQL
+        if [ -d "$target_dir/data/mysql" ] || [ -d "$target_dir/mysql" ] || [ -d "$target_dir/db_data" ]; then
+            raw_db_restored=1
+            echo -e "${GREEN}   ✔ 检测到数据库原始文件(Raw Data)，数据库已随容器恢复。${NC}"
         fi
     fi
 
@@ -2931,51 +2930,54 @@ function perform_restore_logic() {
     # 6. [WP专用] 恢复 Docker 卷
     if [ -f "$restore_path/wp_content.tar.gz" ]; then
         echo " - [WP] 恢复 wp-content 卷..."
-        sleep 3
-        app_c=$(docker compose ps -q wordpress)
+        sleep 2
+        app_c=$(docker compose ps -q wordpress 2>/dev/null)
         if [ ! -z "$app_c" ]; then
             docker run --rm --volumes-from "$app_c" -v "$restore_path":/backup alpine sh -c "tar xzf /backup/wp_content.tar.gz -C /var/www/html"
         fi
     fi
 
-    # 7. [DB] 导入 MySQL
-    # 只有在【没有】恢复原始数据的情况下，才执行 SQL 导入
-    if [ "$has_raw_data" -eq 0 ] && [ -f "$restore_path/db.sql" ]; then
-        echo " - 检测到 SQL 备份，准备导入..."
-        
-        echo -n "   等待数据库启动"
-        db_ready=0
-        for i in {1..40}; do
-            # 使用 sh -c 和环境变量验证连接，确保密码正确且服务就绪
-            if docker compose exec -T db sh -c 'mysqladmin ping -h localhost -u root -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
-                db_ready=1; break
-            fi
-            echo -n "."; sleep 2
-        done
-        echo ""
-        
-        if [ "$db_ready" -eq 1 ]; then
-            echo "   正在导入数据..."
-            # 使用 sh -c 避免宿主机解析密码特殊字符
-            if docker compose exec -T db sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" < /dev/stdin' < "$restore_path/db.sql"; then
-                 echo -e "   ${GREEN}✔ 数据库导入成功${NC}"
-            else
-                 echo -e "   ${RED}❌ SQL 导入失败 (Access denied)${NC}"
-                 echo -e "   提示: 容器内的密码与配置文件不一致，但容器已启动，数据可能已安全。"
-            fi
+    # 7. [DB] 导入 MySQL (智能模式)
+    if [ -f "$restore_path/db.sql" ]; then
+        if [ "$raw_db_restored" -eq 1 ]; then
+            # === 情况 A: 原始文件存在 -> 跳过 SQL 导入 (解决报错的根源) ===
+            echo -e " - [DB] ${CYAN}跳过 SQL 导入 (检测到原始数据已恢复，避免密码冲突)。${NC}"
+            echo -e "        如果网站能正常访问，说明还原成功。"
         else
-            echo -e "${RED}❌ 数据库连接超时或密码错误，跳过 SQL 导入。${NC}"
-            echo -e "   可能是因为旧的数据卷未被清除，数据库使用了旧密码。"
+            # === 情况 B: 只有 SQL 文件 -> 必须导入 ===
+            echo " - [DB] 检测到纯 SQL 备份，准备导入..."
+            
+            echo -n "   等待数据库启动"
+            db_ready=0
+            # 增加重试次数到 60 次 (有些数据库启动很慢)
+            for i in {1..60}; do
+                if docker compose exec -T db sh -c 'mysqladmin ping -h localhost -u root -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
+                    db_ready=1; break
+                fi
+                echo -n "."
+                sleep 1
+            done
+            echo ""
+            
+            if [ "$db_ready" -eq 1 ]; then
+                echo "   正在导入数据..."
+                if docker compose exec -T db sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" < /dev/stdin' < "$restore_path/db.sql"; then
+                     echo -e "   ${GREEN}✔ 数据库导入成功${NC}"
+                else
+                     echo -e "   ${RED}❌ SQL 导入失败 (密码错误或权限拒绝)${NC}"
+                     echo -e "   提示: 请检查 docker-compose.yml 中的密码是否与备份时一致。"
+                fi
+            else
+                echo -e "${RED}❌ 数据库启动超时，无法连接。${NC}"
+            fi
         fi
-    elif [ "$has_raw_data" -eq 1 ]; then
-        echo -e " - [DB] ${GREEN}✔ 已恢复原始数据文件，跳过 SQL 导入。${NC}"
     fi
     
     # 8. 刷新网关
     if type reload_gateway_config >/dev/null 2>&1; then reload_gateway_config; else docker exec gateway_proxy nginx -s reload >/dev/null 2>&1; fi
 
     rm -rf "$restore_path"
-    echo -e "${GREEN}✔ 还原完成${NC}"
+    echo -e "${GREEN}✔ 还原操作结束${NC}"
     write_log "Restored $target_domain"
 }
 
