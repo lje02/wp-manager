@@ -729,21 +729,38 @@ function security_center() {
     while true; do
         clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (Iron Wall V11.0) ===${NC}"
         
-        # 状态检测逻辑 (保持原有)
+        # 1. 防火墙状态
         if command -v ufw >/dev/null; then FW_ST="${GREEN}● UFW${NC}"; else FW_ST="${RED}● Off${NC}"; fi
-        if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● On${NC}"; else F2B_ST="${RED}● Off${NC}"; fi
         
+        # 2. Fail2Ban状态
+        if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● On${NC}"; else F2B_ST="${RED}● Off${NC}"; fi
+
+        # 3. [修改点] WAF状态检测逻辑
+        # 这里必须把 V10.1 改为 V10.2，否则脚本检测不到新版规则，会显示黄色或红色
+        if [ -z "$(ls -A $SITES_DIR)" ]; then
+            WAF_ST="${YELLOW}● 无站点${NC}"
+        else
+            if grep -r "V10.2" "$SITES_DIR" >/dev/null 2>&1; then 
+                WAF_ST="${GREEN}● 已部署 (增强版 V10.2)${NC}"
+            elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
+                WAF_ST="${YELLOW}● 已部署 (旧版)${NC}"
+            else 
+                WAF_ST="${RED}● 未部署${NC}"
+            fi
+        fi
+
         echo -e " 1. 端口防火墙   [$FW_ST]"
         echo -e " 2. 流量访问控制 (Nginx Layer7)"
         echo -e " 3. SSH防暴力破解 [$F2B_ST]"
-        echo -e " 4. 网站防火墙 (WAF V10.1)"
+        # [修改点] 菜单文字显示
+        echo -e " 4. 网站防火墙    [$WAF_ST]" 
         echo -e " 5. HTTPS证书管理"
         echo -e " 6. 防盗链设置"
         echo -e " 7. 主机安全审计 (进程扫描)"
         echo "--------------------------"
-        echo -e " 8. ${CYAN}Cloudflare 真实 IP 修复${NC} (配合CDN)"
+        echo -e " 8. ${CYAN}Cloudflare 真实 IP 修复${NC}"
         echo -e " 9. ${RED}Webshell 查杀与加固${NC}"
-        echo -e " 10. ${GREEN}宿主机自动安全更新${NC} (系统补丁)"
+        echo -e " 10. ${GREEN}宿主机自动安全更新${NC}"
         echo "--------------------------"
         echo " 0. 返回主菜单"
         echo "--------------------------"
@@ -757,7 +774,6 @@ function security_center() {
             5) cert_management;; 
             6) manage_hotlink;; 
             7) server_audit;; 
-            # 新增功能
             8) fix_cloudflare_ip;;
             9) malware_scan;;
             10) enable_auto_updates;;
@@ -1713,7 +1729,7 @@ EOF
 
 function waf_manager() { 
     while true; do 
-        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V10.1 Pro) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ WAF 网站防火墙 (V10.2 Anti-Bot) ===${NC}"
         echo " 1. 部署/更新 究极防御规则"
         echo " 2. 查看当前规则内容"
         echo " 0. 返回上一级"
@@ -1722,24 +1738,26 @@ function waf_manager() {
         case $o in 
             0) return;; 
             1) 
-                echo -e "${BLUE}>>> 正在生成 V10.1 修正版规则...${NC}"
+                echo -e "${BLUE}>>> 正在生成 V10.2 修正版规则...${NC}"
                 
                 cat >/tmp/w <<EOF
 # ==================================================
-#   V10.1 Ultimate WAF Rules (Fixed)
+#   V10.2 Ultimate WAF Rules (Fixed & Bot Block)
 # ==================================================
+
+# --- [0] 全局爬虫拦截 (配合 Traffic Manager) ---
+# 检查由 bots.conf 定义的 map 变量
+if (\$block_bot = 1) { return 403; }
 
 # --- [1] 系统与敏感文件保护 ---
 location ~* \.(engine|inc|info|install|make|module|profile|test|po|sh|.*sql|theme|tpl(\.php)?|xtmpl)$ { return 403; }
 location ~* \.(bak|config|sql|fla|psd|ini|log|sh|inc|swp|dist|exe|bat|dll)$ { return 403; }
 location ~* /\.(git|svn|hg|env|ssh|vscode|idea) { return 403; }
 location ~* (wp-config\.php|readme\.html|license\.txt|debug\.log)$ { return 403; }
-# 屏蔽 XML-RPC (如需 Jetpack 请注释此行)
 location = /xmlrpc.php { deny all; return 403; }
 
-# --- [2] SQL 注入防御 (增强版) ---
+# --- [2] SQL 注入防御 ---
 set \$block_sql_injections 0;
-# [修复点] 去掉了后面的括号限制，只要出现 union select 就拦截
 if (\$query_string ~* "union.*select") { set \$block_sql_injections 1; } 
 if (\$query_string ~* "union.*all.*select") { set \$block_sql_injections 1; }
 if (\$query_string ~* "concat.*\(") { set \$block_sql_injections 1; }
@@ -1760,22 +1778,21 @@ if (\$query_string ~* "javascript:") { set \$block_xss 1; }
 if (\$query_string ~* "(onload|onerror|onmouseover)=") { set \$block_xss 1; }
 if (\$block_xss = 1) { return 403; }
 
-# --- [5] 恶意爬虫 ---
-if (\$http_user_agent ~* (Acunetix|AppScan|ApacheBench|Burp|Dirbuster|Go-http-client|Harvest|Havij|Hydra|Java|Jorgee|libwww-perl|masscan|Nessus|Netsparker|Nikto|Nmap|OpenVAS|Pangolin|Python-urllib|SF|sqlmap|Swift|Wget|WinHttp|Xenu|ZmEu)) { return 403; }
+# --- [5] 备用爬虫拦截 (站内硬编码) ---
+if (\$http_user_agent ~* (Acunetix|AppScan|ApacheBench|Burp|Dirbuster|Havij|Hydra|Jorgee|masscan|Nessus|Netsparker|Nikto|OpenVAS|Pangolin|SF|ZmEu)) { return 403; }
 EOF
                 count=0
                 for d in "$SITES_DIR"/*; do 
                     if [ -d "$d" ]; then 
-                        # 强力修复 nginx.conf 引用
+                        # 确保引用
                         if [ -f "$d/nginx.conf" ] && ! grep -q "waf.conf" "$d/nginx.conf"; then
-                             # 在 server { 下面的一行插入 include (更稳健的位置)
                              sed -i '/server_name localhost;/a \    include /etc/nginx/waf.conf;' "$d/nginx.conf"
-                             echo -e " - $(basename "$d"): ${YELLOW}修复配置引用${NC}"
                         fi
 
                         cp /tmp/w "$d/waf.conf" 
+                        # 使用新的重启逻辑
                         cd "$d" && docker compose exec -T nginx nginx -s reload >/dev/null 2>&1
-                        echo -e " - $(basename "$d"): ${GREEN}V10.1 规则已生效${NC}"
+                        echo -e " - $(basename "$d"): ${GREEN}V10.2 规则已生效${NC}"
                         ((count++))
                     fi 
                 done
@@ -1818,29 +1835,32 @@ function traffic_manager() {
     # 内部函数：安全重载 Nginx
     function safe_reload() {
         echo -e "${YELLOW}>>> 正在测试 Nginx 配置...${NC}"
-        # 预检配置，防止写错导致网关挂掉
+        # 预检配置
         if docker exec gateway_proxy nginx -t >/dev/null 2>&1; then
-            docker exec gateway_proxy nginx -s reload
+            reload_gateway_config # 调用之前修复过的带等待的重启函数
             echo -e "${GREEN}✔ 配置生效${NC}"
         else
             echo -e "${RED}❌ 配置有误，Nginx 拒绝加载！${NC}"
-            echo -e "请检查刚才输入的规则是否正确，或尝试清空规则。"
+            echo -e "请尝试清空规则。"
         fi
     }
 
     # 内部函数：校验 IP 格式
     function validate_ip() {
         local ip=$1
-        if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
-            return 0
-        else
-            return 1
-        fi
+        if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then return 0; else return 1; fi
     }
 
     while true; do 
         clear; echo -e "${YELLOW}=== 🌐 流量控制加强版 (Traffic ACL) ===${NC}"
         echo -e "当前规则数: IP[$(wc -l < "$FW_DIR/access.conf")] | 国家[$(wc -l < "$FW_DIR/geo.conf")]"
+        # 检查爬虫规则是否开启 (检查文件内容是否包含 map)
+        if grep -q "map \$http_user_agent" "$FW_DIR/bots.conf"; then
+            BOT_ST="${GREEN}已开启${NC}"
+        else
+            BOT_ST="${YELLOW}未开启${NC}"
+        fi
+        echo -e "爬虫拦截状态: $BOT_ST"
         echo "--------------------------"
         echo " 1. 添加 黑/白 名单 IP"
         echo " 2. 查看 已封禁/放行 列表"
@@ -1862,39 +1882,31 @@ function traffic_manager() {
                 echo -e "2. 白名单 (Allow) - 允许访问 (需配合 deny all 使用)"
                 read -p "请选择类型 [1/2]: " type
                 if [ "$type" == "1" ]; then rule="deny"; else rule="allow"; fi
-                
-                read -p "请输入 IP 或网段 (如 1.2.3.4 或 1.2.3.0/24): " ip
+                read -p "请输入 IP 或网段: " ip
                 if validate_ip "$ip"; then
                     if grep -q "$ip;" "$FW_DIR/access.conf"; then
-                        echo -e "${YELLOW}该 IP 已存在于列表中${NC}"
+                        echo -e "${YELLOW}该 IP 已存在${NC}"
                     else
                         echo "$rule $ip;" >> "$FW_DIR/access.conf"
                         safe_reload
                     fi
                 else
-                    echo -e "${RED}❌ IP 格式错误！${NC}"
+                    echo -e "${RED}❌ IP 格式错误${NC}"
                 fi
                 pause_prompt;; 
             
             2) 
-                echo -e "${CYAN}=== 当前 IP 规则列表 ===${NC}"
-                if [ -s "$FW_DIR/access.conf" ]; then
-                    cat -n "$FW_DIR/access.conf"
-                else
-                    echo "列表为空"
-                fi
-                echo "--------------------------"
+                echo -e "${CYAN}=== IP 规则列表 ===${NC}"
+                [ -s "$FW_DIR/access.conf" ] && cat -n "$FW_DIR/access.conf" || echo "列表为空"
                 pause_prompt;;
 
             3) 
-                echo -e "${CYAN}=== 删除规则 ===${NC}"
-                if [ ! -s "$FW_DIR/access.conf" ]; then echo "列表为空"; pause_prompt; continue; fi
+                [ ! -s "$FW_DIR/access.conf" ] && echo "列表为空" && pause_prompt && continue
                 cat -n "$FW_DIR/access.conf"
-                echo "--------------------------"
-                read -p "请输入要删除的 IP (输入内容): " del_ip
+                read -p "请输入要删除的 IP: " del_ip
                 if [ ! -z "$del_ip" ]; then
                     sed -i "/$del_ip;/d" "$FW_DIR/access.conf"
-                    echo -e "${GREEN}已删除包含 $del_ip 的规则${NC}"
+                    echo -e "${GREEN}已删除${NC}"
                     safe_reload
                 fi
                 pause_prompt;;
@@ -1902,34 +1914,36 @@ function traffic_manager() {
             4) 
                 read -p "请输入国家代码 (如 cn, ru, us): " c
                 c=$(echo "$c" | tr '[:upper:]' '[:lower:]')
-                echo -e "${YELLOW}>>> 正在下载 $c IP 段数据...${NC}"
-                
+                echo -e "${YELLOW}>>> 正在下载 $c IP 段...${NC}"
                 if curl -sL "http://www.ipdeny.com/ipblocks/data/countries/$c.zone" -o /tmp/ip_list.txt; then
                     if [ -s /tmp/ip_list.txt ] && ! grep -q "DOCTYPE" /tmp/ip_list.txt; then
                         while read line; do echo "deny $line;" >> "$FW_DIR/geo.conf"; done < /tmp/ip_list.txt
                         rm /tmp/ip_list.txt
                         safe_reload
                     else
-                        echo -e "${RED}❌ 下载失败或国家代码无效${NC}"
+                        echo -e "${RED}❌ 国家代码无效${NC}"
                     fi
                 else
-                    echo -e "${RED}❌ 网络连接失败${NC}"
+                    echo -e "${RED}❌ 下载失败${NC}"
                 fi
                 pause_prompt;; 
             
             5)
-                # [修复] 补全了这里的逻辑
-                echo -e "这将屏蔽常见扫描器: curl, wget, python, go-http, sqlmap 等。"
+                echo -e "屏蔽常见扫描器: curl, wget, python, go-http, sqlmap, nmap 等。"
                 read -p "是否开启? (y=开启, n=关闭): " bot_confirm
                 if [ "$bot_confirm" == "y" ]; then
-                    # 1. 写入配置
+                    # 【核心修复】使用 map 代替 if
+                    # 如果匹配到爬虫，将变量 $block_bot 置为 1，否则为 0
                     cat > "$FW_DIR/bots.conf" <<EOF
-if (\$http_user_agent ~* (Scrapy|Curl|HttpClient|Java|Wget|Python|Go-http-client|SQLMap|Nmap|Nikto|Havij)) { return 403; }
+map \$http_user_agent \$block_bot {
+    default 0;
+    "~*(Scrapy|Curl|HttpClient|Java|Wget|Python|Go-http-client|SQLMap|Nmap|Nikto|Havij|Indy Library)" 1;
+}
 EOF
-                    echo -e "${GREEN}>>> 已写入爬虫拦截规则${NC}"
+                    echo -e "${GREEN}>>> 已写入爬虫拦截规则 (Map模式)${NC}"
+                    echo -e "${YELLOW}注意: 需要更新 WAF 规则 (菜单 30-1) 才能在站点生效。${NC}"
                     safe_reload
                 else
-                    # 2. 清空配置 (相当于关闭)
                     echo "" > "$FW_DIR/bots.conf"
                     echo -e "${YELLOW}>>> 已关闭爬虫拦截${NC}"
                     safe_reload
@@ -1937,7 +1951,7 @@ EOF
                 pause_prompt;; 
 
             6) 
-                read -p "确定清空所有 IP、国家和爬虫规则吗? (y/n): " confirm
+                read -p "确定清空所有规则吗? (y/n): " confirm
                 if [ "$confirm" == "y" ]; then
                     echo "" > "$FW_DIR/access.conf"
                     echo "" > "$FW_DIR/geo.conf"
