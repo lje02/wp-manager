@@ -2832,7 +2832,7 @@ function manage_remarks() {
     done
 }
 
-# === [修复版] HTTPS 证书高级管理中心 ===
+# === [V3.0 修复版] HTTPS 证书高级管理中心 ===
 function cert_management() {
     # 依赖工具函数：计算剩余天数
     function get_cert_days() {
@@ -2845,7 +2845,7 @@ function cert_management() {
 
     while true; do
         clear
-        echo -e "${YELLOW}=== 🔐 HTTPS 证书高级管理中心 (Fix V2) ===${NC}"
+        echo -e "${YELLOW}=== 🔐 HTTPS 证书高级管理中心 (Deep Clean) ===${NC}"
         echo -e "核心网关: gateway_proxy | 签发容器: gateway_acme"
         echo "---------------------------------------------------------"
         echo -e " 1. ${GREEN}证书状态看板${NC} (显示过期时间/剩余天数)"
@@ -2854,7 +2854,7 @@ function cert_management() {
         echo " 4. 部署自定义证书 (上传 .crt 和 .key)"
         echo " 5. 删除/重置指定证书 (用于申请失败重试)"
         echo " 6. 备份所有证书到本地"
-        echo -e " 7. ${CYAN}强制重置并申请指定域名 (解决申请死循环)${NC}" 
+        echo -e " 7. ${CYAN}彻底销毁并重申指定域名 (核弹级修复)${NC}" 
         echo " 0. 返回上一级"
         echo "---------------------------------------------------------"
         read -p "请输入选项 [0-7]: " c
@@ -2864,7 +2864,7 @@ function cert_management() {
             
             1)
                 clear
-                echo -e "${YELLOW}>>> 正在扫描证书信息，请稍候...${NC}"
+                echo -e "${YELLOW}>>> 正在扫描证书信息...${NC}"
                 printf "${CYAN}%-25s %-30s %-10s${NC}\n" "域名 (Domain)" "过期时间 (Expire)" "剩余天数"
                 echo "----------------------------------------------------------------------"
                 certs=$(docker exec gateway_acme find /etc/nginx/certs -name "*.crt" 2>/dev/null)
@@ -2901,9 +2901,8 @@ function cert_management() {
                 echo -e "${RED}⚠️  警告: 强制重签所有证书可能触发 Rate Limit。${NC}"
                 read -p "确认执行? (输入 renew 确认): " confirm
                 if [ "$confirm" == "renew" ]; then
-                    # 修复：使用官方推荐的 force_renew 脚本
                     docker exec gateway_acme /app/force_renew
-                    echo -e "${GREEN}✔ 命令已发送，请通过日志查看进度。${NC}"
+                    echo -e "${GREEN}✔ 命令已发送。${NC}"
                 fi
                 pause_prompt
                 ;;
@@ -2928,16 +2927,13 @@ function cert_management() {
                 ;;
                 
             5)
-                echo -e "${RED}>>> 删除证书 (彻底重置)${NC}"
+                # 简单删除
                 read -p "请输入要删除的域名: " d
                 read -p "确认删除? (y/n): " confirm
                 if [ "$confirm" == "y" ]; then
-                    # 彻底删除证书文件
                     docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key" "/etc/nginx/certs/$d.chain.pem"
-                    # 重启 ACME 容器以触发状态检测
                     docker restart gateway_acme
-                    echo -e "${GREEN}✔ 已删除并重启 ACME 容器。${NC}"
-                    echo -e "提示：如果站点正在运行，ACME 容器稍后会自动检测到缺失并重新申请。"
+                    echo -e "${GREEN}✔ 已删除。${NC}"
                 fi
                 pause_prompt
                 ;;
@@ -2951,28 +2947,40 @@ function cert_management() {
                 ;;
 
             7)
-                echo -e "${YELLOW}>>> 强制重置并申请指定域名 (Smart Force)${NC}"
-                echo -e "原理: 删除旧证书 -> 重启 ACME -> 重启站点容器 (触发新申请)"
+                echo -e "${RED}>>> 彻底销毁并重申指定域名 (核弹级修复)${NC}"
+                echo -e "原理: 删除证书文件 + 删除 ACME 内部状态目录 + 强制重建容器"
                 read -p "请输入域名: " d
                 if [ -z "$d" ]; then continue; fi
                 
-                # 1. 强制删除容器内的旧证书
-                echo -e "${CYAN}1. 清理旧证书缓存...${NC}"
-                docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key"
+                # 1. 删除 Nginx 使用的证书文件
+                echo -e "${CYAN}1. [清理] 删除 Nginx 证书文件...${NC}"
+                docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key" "/etc/nginx/certs/$d.chain.pem"
                 
-                # 2. 重启 ACME 容器
-                echo -e "${CYAN}2. 重置签发服务...${NC}"
+                # 2. 【核心】删除 ACME 内部状态目录 (彻底失忆)
+                echo -e "${CYAN}2. [清理] 删除 ACME 内部账户记忆...${NC}"
+                docker exec gateway_acme rm -rf "/etc/acme.sh/$d"
+                docker exec gateway_acme rm -rf "/etc/acme.sh/${d}_ecc"
+                
+                # 3. 重启 ACME 容器
+                echo -e "${CYAN}3. [重置] 重启签发服务...${NC}"
                 docker restart gateway_acme >/dev/null
+                sleep 2
                 
-                # 3. 触发站点信号
-                echo -e "${CYAN}3. 唤醒站点容器以触发申请...${NC}"
+                # 4. 强制重建站点容器 (生成新的 Docker ID 触发事件)
+                echo -e "${CYAN}4. [触发] 强制重建站点容器...${NC}"
                 if [ -d "$SITES_DIR/$d" ]; then
-                    cd "$SITES_DIR/$d" && docker compose restart
+                    cd "$SITES_DIR/$d"
+                    # 使用 force-recreate 确保生成全新的容器ID，这能强力触发 ACME 的监听
+                    docker compose up -d --force-recreate
+                    
+                    # 5. 最后踢一下网关
+                    reload_gateway_config
+                    
                     echo -e "${GREEN}✔ 信号已发送！${NC}"
-                    echo -e "请等待 30-60 秒，然后使用 [1] 查看证书是否生成。"
-                    echo -e "或者使用 [2] 查看详细日志。"
+                    echo -e "ACME 现在应该认为这是一个从未见过的域名，正在重新申请..."
+                    echo -e "请等待 60 秒后查看日志。"
                 else
-                    echo -e "${RED}❌ 找不到该站点的目录，无法重启容器。${NC}"
+                    echo -e "${RED}❌ 找不到该站点的目录。${NC}"
                 fi
                 pause_prompt
                 ;;
