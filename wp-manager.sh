@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.3.4(快捷方式: mmp)"
+VERSION="V10.3.5(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -2775,7 +2775,7 @@ disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_get_
 open_basedir = /var/www/html:/tmp
 EOF
 
-    # 4. 生成 Docker Compose (已修复 YAML 换行和 PHP 变量)
+       # 4. 生成 Docker Compose
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
   db:
@@ -2832,13 +2832,15 @@ services:
       WORDPRESS_CONFIG_EXTRA: |
         define('WP_REDIS_HOST', 'redis');
         define('WP_REDIS_PORT', 6379);
-        define('WP_HOME', 'https://' . \$_SERVER['HTTP_HOST']);
-        define('WP_SITEURL', 'https://' . \$_SERVER['HTTP_HOST']);
-        if (isset(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
-            \$_SERVER['HTTPS'] = 'on';
+        // 这里必须用 \$\$，Bash写入为 $$，Docker Compose 解析为 $
+        define('WP_HOME', 'https://' . \$\$_SERVER['HTTP_HOST']);
+        define('WP_SITEURL', 'https://' . \$\$_SERVER['HTTP_HOST']);
+        if (isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
+            \$\$_SERVER['HTTPS'] = 'on';
         }
     volumes:
       - wp_data:/var/www/html
+      # 修正了之前的换行错误
       - ./php_security.ini:/usr/local/etc/php/conf.d/security.ini
     networks:
       - default
