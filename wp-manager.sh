@@ -2740,8 +2740,7 @@ server {
 }
 EOF
 
-    # 3. 生成 PHP 上传限制配置
-    # 注意：某些备份插件或图片处理插件可能需要 proc_open，如果报错请从列表中移除
+     # 3. 生成 PHP 安全加固配置
     cat > "$sdir/php_security.ini" <<EOF
 [PHP]
 ; === 基础安全 ===
@@ -2750,6 +2749,7 @@ display_errors = Off
 display_startup_errors = Off
 log_errors = On
 error_log = /var/log/php_errors.log
+
 ; === 资源限制 (防DoS) ===
 memory_limit = 512M
 max_execution_time = 300
@@ -2757,22 +2757,25 @@ max_input_time = 300
 post_max_size = 512M
 upload_max_filesize = 512M
 max_file_uploads = 20
+
 ; === 远程包含防御 (防RFI) ===
 allow_url_fopen = On
 allow_url_include = Off
+
 ; === 会话安全 ===
 session.cookie_httponly = 1
 session.use_only_cookies = 1
 session.cookie_secure = 1
+
 ; === 核心函数禁用 (废掉 Webshell) ===
-; 禁用了命令执行、进程操作等函数。这能防御 90% 的一句话木马。
-disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_get_status,popen,ini_alter,ini_restore,dl,readlink,symlink,popepassthru,stream_socket_server,fsocket,popen
+; 已修复拼写错误: popepassthru -> fpassthru
+disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_get_status,popen,ini_alter,ini_restore,dl,readlink,symlink,fpassthru,stream_socket_server,fsocket
+
 ; === 目录锁定 (防跨站/读系统文件) ===
-; 限制 PHP 只能访问 /var/www/html 和 /tmp 目录
 open_basedir = /var/www/html:/tmp
 EOF
 
-    # 4. 生成 Docker Compose (已修复 Logging 和 环境变量)
+    # 4. 生成 Docker Compose (已修复 YAML 换行和 PHP 变量)
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
   db:
@@ -2829,19 +2832,18 @@ services:
       WORDPRESS_CONFIG_EXTRA: |
         define('WP_REDIS_HOST', 'redis');
         define('WP_REDIS_PORT', 6379);
-        define('WP_HOME', 'https://' . \$\$_SERVER['HTTP_HOST']);
-        define('WP_SITEURL', 'https://' . \$\$_SERVER['HTTP_HOST']);
-        if (isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
-            \$\$_SERVER['HTTPS'] = 'on';
+        define('WP_HOME', 'https://' . \$_SERVER['HTTP_HOST']);
+        define('WP_SITEURL', 'https://' . \$_SERVER['HTTP_HOST']);
+        if (isset(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
+            \$_SERVER['HTTPS'] = 'on';
         }
     volumes:
       - wp_data:/var/www/html
-      - ./php_security
-.ini:/usr/local/etc/php/conf.d/security
-.ini
+      - ./php_security.ini:/usr/local/etc/php/conf.d/security.ini
     networks:
       - default
-
+EOF
+ 
   nginx:
     image: nginx:alpine
     container_name: ${pname}_nginx
