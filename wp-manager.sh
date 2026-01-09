@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.3.3(快捷方式: mmp)"
+VERSION="V10.3.4(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -1867,6 +1867,12 @@ function waf_manager() {
 # ==================================================
 #   V10.3 Ultimate WAF Rules (Site Level)
 # ==================================================
+# 1. 禁用非法 HTTP 方法 (只允许标准方法)
+if (\$request_method !~ ^(GET|POST|HEAD)$ ) { return 405; }
+
+# 2. 禁止空 User-Agent 或异常 UA
+if (\$http_user_agent = "") { return 403; }
+if (\$http_user_agent ~* "WinHttp|WebZIP|Fetch") { return 403; }
 
 # --- [1] 系统与敏感文件保护 ---
 location ~* \.(engine|inc|info|install|make|module|profile|test|po|sh|.*sql|theme|tpl(\.php)?|xtmpl)$ { return 403; }
@@ -2451,7 +2457,9 @@ function init_gateway() {
     echo "proxy_read_timeout 600s;" >> upload_size.conf
     echo "proxy_send_timeout 600s;" >> upload_size.conf
     echo "server_tokens off;" >> upload_size.conf
-    
+    echo "large_client_header_buffers 4 16k;" >> upload_size.conf
+    echo "client_header_buffer_size 4k;" >> upload_size.conf
+    echo "client_body_buffer_size 128k;" >> upload_size.conf
     # 4. 生成 Docker Compose (已修复 Logging 格式)
     cat > docker-compose.yml <<EOF
 services:
