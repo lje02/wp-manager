@@ -880,6 +880,7 @@ function security_center() {
         echo -e " 9. ${RED}Webshell 查杀与加固${NC} (防木马)"
         echo -e " 10. ${GREEN}宿主机自动安全更新${NC} (防漏洞)"
         echo -e " 11. ${RED}Cloudflare 防火墙白名单${NC} (防源站泄露)"
+        echo -e " 12. ${GREEN}全站 PHP 安全加固${NC} (禁用高危函数)"
         echo "--------------------------"
         echo " 0. 返回主菜单"
         echo "--------------------------"
@@ -897,6 +898,7 @@ function security_center() {
             9) malware_scan;;
             10) enable_auto_updates;;
             11) whitelist_cloudflare_firewall;;
+            12) harden_php_security;;
         esac
     done 
 }
@@ -1601,7 +1603,6 @@ function component_manager() {
         echo " 2. 切换 数据库 版本 (⚠️ 高危)"
         echo " 3. 切换 Redis 版本"
         echo " 4. 切换 Nginx 版本 (推荐 Alpine)"
-        echo -e " 5. ${GREEN}全站 PHP 安全加固 (disable_functions)${NC} [推荐]"
         echo " 0. 返回上一级"
         echo "--------------------------"
         read -p "请输入选项 [0-4]: " op
