@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.3.2(快捷方式: mmp)"
+VERSION="V10.3.3(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -736,9 +736,118 @@ function enable_auto_updates() {
     pause_prompt
 }
 
+# === [新增] Cloudflare防火墙白名单 (只允许CF访问) ===
+function whitelist_cloudflare_firewall() {
+    # 检测防火墙类型
+    if command -v ufw >/dev/null; then FW_TYPE="UFW";
+    elif command -v firewall-cmd >/dev/null; then FW_TYPE="FIREWALLD";
+    else echo -e "${RED}❌ 未检测到 UFW 或 Firewalld，无法配置。${NC}"; pause_prompt; return; fi
+
+    while true; do
+        clear
+        echo -e "${RED}=== 🧱 Cloudflare 专属白名单 (Source IP Lock) ===${NC}"
+        echo -e "防火墙类型: $FW_TYPE"
+        echo -e "------------------------------------------------"
+        echo -e "${YELLOW}功能说明：${NC}"
+        echo -e "此功能将删除 80/443 的【全网允许】规则，并添加【Cloudflare IP】允许规则。"
+        echo -e "生效后，只有经过 Cloudflare 代理的流量才能访问你的网站。"
+        echo -e "扫描器、直接通过 IP 访问的黑客将被防火墙直接丢弃包。"
+        echo -e "------------------------------------------------"
+        echo -e " 1. ${GREEN}开启白名单限制 (Lock Down)${NC}"
+        echo -e " 2. 关闭限制 (恢复全网访问)"
+        echo -e " 0. 返回"
+        echo -e "------------------------------------------------"
+        read -p "请选择: " o
+        
+        case $o in
+            0) return;;
+            
+            1)
+                echo -e "${RED}⚠️  高危操作确认${NC}"
+                echo -e "1. 请确保你的域名在 CF 后台已开启【小云朵 (Proxied)】，否则网站将无法访问！"
+                echo -e "2. 脚本会自动放行 SSH (22端口)，防止失联。"
+                read -p "我确认已开启小云朵代理 (yes/no): " confirm
+                if [ "$confirm" != "yes" ]; then continue; fi
+
+                echo -e "${YELLOW}>>> 正在获取 Cloudflare 最新 IP 列表...${NC}"
+                cf_ipv4=$(curl -s https://www.cloudflare.com/ips-v4)
+                cf_ipv6=$(curl -s https://www.cloudflare.com/ips-v6)
+
+                if [ -z "$cf_ipv4" ]; then echo -e "${RED}❌ 获取 IP 列表失败，请检查网络。${NC}"; pause_prompt; continue; fi
+
+                echo -e "${YELLOW}>>> 正在配置防火墙规则 (可能需要几十秒)...${NC}"
+
+                if [ "$FW_TYPE" == "UFW" ]; then
+                    # === UFW 逻辑 ===
+                    # 1. 保命：先允许 SSH
+                    ufw allow 22/tcp >/dev/null
+                    
+                    # 2. 清理旧规则 (删除通用的 80/443 允许)
+                    # 注意：UFW 删除规则如果不匹配会报错，所以重定向错误输出
+                    ufw delete allow 80/tcp >/dev/null 2>&1
+                    ufw delete allow 443/tcp >/dev/null 2>&1
+                    ufw delete allow 80 >/dev/null 2>&1
+                    ufw delete allow 443 >/dev/null 2>&1
+
+                    # 3. 循环添加白名单
+                    for ip in $cf_ipv4; do 
+                        ufw allow from $ip to any port 80 proto tcp >/dev/null
+                        ufw allow from $ip to any port 443 proto tcp >/dev/null
+                    done
+                    for ip in $cf_ipv6; do 
+                        ufw allow from $ip to any port 80 proto tcp >/dev/null
+                        ufw allow from $ip to any port 443 proto tcp >/dev/null
+                    done
+                    
+                    ufw reload
+                else
+                    # === Firewalld 逻辑 ===
+                    # 1. 保命
+                    firewall-cmd --permanent --add-service=ssh >/dev/null
+                    
+                    # 2. 移除通用服务
+                    firewall-cmd --permanent --remove-service=http >/dev/null 2>&1
+                    firewall-cmd --permanent --remove-service=https >/dev/null 2>&1
+                    
+                    # 3. 添加 Rich Rules
+                    echo -e "正在写入规则..."
+                    for ip in $cf_ipv4; do 
+                        firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='$ip' port protocol='tcp' port='80' accept" >/dev/null
+                        firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='$ip' port protocol='tcp' port='443' accept" >/dev/null
+                    done
+                    for ip in $cf_ipv6; do
+                        firewall-cmd --permanent --add-rich-rule="rule family='ipv6' source address='$ip' port protocol='tcp' port='80' accept" >/dev/null
+                        firewall-cmd --permanent --add-rich-rule="rule family='ipv6' source address='$ip' port protocol='tcp' port='443' accept" >/dev/null
+                    done
+                    
+                    firewall-cmd --reload
+                fi
+                echo -e "${GREEN}✔ 已开启白名单限制！现在只有 Cloudflare 能连接你的 80/443 端口。${NC}"
+                pause_prompt
+                ;;
+                
+            2)
+                echo -e "${YELLOW}>>> 正在恢复全网访问...${NC}"
+                if [ "$FW_TYPE" == "UFW" ]; then
+                    ufw allow 80/tcp
+                    ufw allow 443/tcp
+                    # 注意：我们不自动删除刚才加的几百条 CF 规则，因为加上通用规则后，白名单就自动失效了（变得不重要了）
+                    # 这样处理速度最快，而且不影响使用
+                else
+                    firewall-cmd --permanent --add-service=http
+                    firewall-cmd --permanent --add-service=https
+                    firewall-cmd --reload
+                fi
+                echo -e "${GREEN}✔ 已恢复全网访问。${NC}"
+                pause_prompt
+                ;;
+        esac
+    done
+}
+
 function security_center() {
     while true; do
-        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (Iron Wall V11.0) ===${NC}"
+        clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (Iron Wall V11.1) ===${NC}"
         
         # 1. 防火墙状态
         if command -v ufw >/dev/null; then FW_ST="${GREEN}● UFW${NC}"; else FW_ST="${RED}● Off${NC}"; fi
@@ -746,15 +855,14 @@ function security_center() {
         # 2. Fail2Ban状态
         if systemctl is-active fail2ban >/dev/null 2>&1; then F2B_ST="${GREEN}● On${NC}"; else F2B_ST="${RED}● Off${NC}"; fi
 
-        # 3. [修改点] WAF状态检测逻辑
-        # 这里必须把 V10.1 改为 V10.2，否则脚本检测不到新版规则，会显示黄色或红色
+        # 3. WAF状态
         if [ -z "$(ls -A $SITES_DIR)" ]; then
             WAF_ST="${YELLOW}● 无站点${NC}"
         else
             if grep -r "V10.3" "$SITES_DIR" >/dev/null 2>&1; then 
-                WAF_ST="${GREEN}● 已部署 (增强版 V10.3)${NC}"
+                WAF_ST="${GREEN}● 增强版 (V10.3)${NC}"
             elif grep -r "waf.conf" "$SITES_DIR" >/dev/null 2>&1; then 
-                WAF_ST="${YELLOW}● 已部署 (旧版)${NC}"
+                WAF_ST="${YELLOW}● 已部署 (基础版)${NC}"
             else 
                 WAF_ST="${RED}● 未部署${NC}"
             fi
@@ -763,19 +871,19 @@ function security_center() {
         echo -e " 1. 端口防火墙   [$FW_ST]"
         echo -e " 2. 流量访问控制 (Nginx Layer7)"
         echo -e " 3. SSH防暴力破解 [$F2B_ST]"
-        # [修改点] 菜单文字显示
         echo -e " 4. 网站防火墙    [$WAF_ST]" 
         echo -e " 5. HTTPS证书管理"
         echo -e " 6. 防盗链设置"
         echo -e " 7. 主机安全审计 (进程扫描)"
         echo "--------------------------"
-        echo -e " 8. ${CYAN}Cloudflare 真实 IP 修复${NC}"
-        echo -e " 9. ${RED}Webshell 查杀与加固${NC}"
-        echo -e " 10. ${GREEN}宿主机自动安全更新${NC}"
+        echo -e " 8. ${CYAN}Cloudflare 真实 IP 修复${NC} (日志显示真IP)"
+        echo -e " 9. ${RED}Webshell 查杀与加固${NC} (防木马)"
+        echo -e " 10. ${GREEN}宿主机自动安全更新${NC} (防漏洞)"
+        echo -e " 11. ${RED}Cloudflare 防火墙白名单${NC} (防源站泄露)"
         echo "--------------------------"
         echo " 0. 返回主菜单"
         echo "--------------------------"
-        read -p "请输入选项 [0-10]: " s
+        read -p "请输入选项 [0-11]: " s
         case $s in 
             0) return;; 
             1) port_manager;; 
@@ -788,6 +896,7 @@ function security_center() {
             8) fix_cloudflare_ip;;
             9) malware_scan;;
             10) enable_auto_updates;;
+            11) whitelist_cloudflare_firewall;;
         esac
     done 
 }
