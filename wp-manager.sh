@@ -401,52 +401,58 @@ EOF
 chmod +x "$LISTENER_SCRIPT"
 }
 
-# === [智能版] 刷新网关 (验证配置后再重载) ===
+# === [完美版] 智能网关刷新 (双重重载机制) ===
 function reload_gateway_config() {
-    local target_domain=$1 # 接收传入的域名参数
+    local target_domain=$1
     echo -e "${YELLOW}>>> 正在同步网关配置...${NC}"
 
-    # 如果传入了域名，则进行【智能验证】
-    if [ ! -z "$target_domain" ]; then
-        echo -n "   正在等待网关生成 [ $target_domain ] 的配置..."
-        local max_retries=15  # 最多等 15 秒
-        local found=0
-
-        for ((i=1; i<=max_retries; i++)); do
-            # 深入网关容器内部，检查 default.conf 文件里有没有这个域名
-            if docker exec gateway_proxy grep -q "$target_domain" /etc/nginx/conf.d/default.conf 2>/dev/null; then
-                found=1
-                echo -e " ${GREEN}✔ 检测到配置已生成！${NC}"
-                break
-            fi
-            echo -n "."
-            sleep 1
-        done
-
-        if [ $found -eq 0 ]; then
-            echo -e "\n${RED}⚠️  超时警告: 网关未在 $max_retries 秒内生成新配置。${NC}"
-            echo -e "这可能是 socket-proxy 延迟或容器未完全启动。尝试强制重启..."
-            # 实在不行，强制重启触发全量扫描
-            docker restart gateway_proxy >/dev/null 2>&1
-            return
-        fi
-    else
-        # 如果是删站或其他操作没有传域名，就死等 3 秒
-        sleep 3
-    fi
-
-    # === 执行平滑重载 (Reload) 而不是暴力重启 (Restart) ===
-    # Reload 不会中断现有连接，且速度极快
+    # 1. 【第一阶段】立即平滑重载
+    # 目的：让 Nginx 识别新域名，打通 HTTP (80) 端口
+    # 只有这一步成功了，Let's Encrypt 的验证请求才能进来
     if docker ps | grep -q "gateway_proxy"; then
         docker exec gateway_proxy nginx -s reload >/dev/null 2>&1
-        echo -e "${GREEN}✔ Nginx 已平滑重载，新站点生效。${NC}"
-        
-        # 顺便踢一下 ACME
-        if docker ps | grep -q "gateway_acme"; then
-             docker restart gateway_acme >/dev/null 2>&1
-        fi
+        echo -e "${GREEN}✔ 阶段一: 路由表已更新 (HTTP已通，准备接收证书)${NC}"
     else
-        echo -e "${RED}⚠️  网关未运行，无法刷新。${NC}"
+        echo -e "${RED}❌ 网关未运行${NC}"; return
+    fi
+
+    # 如果没有传入域名（只是普通刷新），到这就结束了
+    if [ -z "$target_domain" ]; then return; fi
+
+    # 2. 【第二阶段】等待证书生成
+    # 只有新站点才需要这一步。脚本会挂起等待，直到证书文件出现在网关容器里。
+    echo -e "${YELLOW}>>> 正在等待 SSL 证书签发 (可能需要 15-60 秒)...${NC}"
+    echo -n "   Waiting"
+    
+    local max_wait=90  # 最大等待 90 秒
+    local cert_found=0
+
+    for ((i=1; i<=max_wait; i++)); do
+        # 检查网关容器内是否存在该域名的 .crt 文件
+        if docker exec gateway_proxy test -f "/etc/nginx/certs/${target_domain}.crt"; then
+            cert_found=1
+            echo -e "\n${GREEN}✔ 证书已生成！${NC}"
+            break
+        fi
+        echo -n "."
+        sleep 1
+    done
+
+    if [ $cert_found -eq 0 ]; then
+        echo -e "\n${RED}⚠️  等待超时：证书尚未就绪。${NC}"
+        echo -e "原因可能是：DNS解析未生效、Cloudflare未开启DNS Only、或申请频率受限。"
+        echo -e "但这不影响网站运行，稍后证书生成后会自动生效。"
+    else
+        # 3. 【第三阶段】证书就绪，执行终极重启
+        echo -e "${YELLOW}>>> 正在加载 SSL 安全配置...${NC}"
+        
+        # 这里使用 restart 而不是 reload，确保端口监听状态彻底切换
+        docker restart gateway_proxy >/dev/null 2>&1
+        
+        # 顺手重启 ACME 保持连接活跃
+        docker restart gateway_acme >/dev/null 2>&1
+        
+        echo -e "${GREEN}✔ 阶段二: HTTPS 已全绿开启 (完美启动)${NC}"
     fi
 }
 
