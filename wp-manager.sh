@@ -1481,6 +1481,95 @@ function container_ops() {
     done 
 }
 
+# === [新增] 全站 PHP 安全加固 (批量部署) ===
+function harden_php_security() {
+    echo -e "${RED}=== 🔒 PHP 深度安全加固 (Security Hardening) ===${NC}"
+    echo -e "${YELLOW}此功能将为所有现有 WordPress 站点执行以下操作：${NC}"
+    echo -e "1. 生成 php_security.ini (禁用 exec, system, shell_exec 等高危函数)。"
+    echo -e "2. 修改 docker-compose.yml 挂载该配置。"
+    echo -e "3. 重启站点容器以生效。"
+    echo "------------------------------------------------"
+    echo -e "${RED}注意：某些依赖系统命令的插件(如特定备份/压缩插件)可能会失效。${NC}"
+    read -p "确认执行? (y/n): " confirm
+    if [ "$confirm" != "y" ]; then return; fi
+
+    for d in "$SITES_DIR"/*; do
+        if [ -d "$d" ]; then
+            domain=$(basename "$d")
+            echo -e "\n正在处理: ${CYAN}$domain${NC} ..."
+            
+            # 1. 写入安全配置文件
+            cat > "$d/php_security.ini" <<EOF
+[PHP]
+; === 基础隐藏 ===
+expose_php = Off
+display_errors = Off
+display_startup_errors = Off
+log_errors = On
+
+; === 资源限制 ===
+memory_limit = 512M
+upload_max_filesize = 512M
+post_max_size = 512M
+max_execution_time = 300
+max_input_time = 300
+
+; === 安全核心 ===
+allow_url_fopen = On
+allow_url_include = Off
+session.cookie_httponly = 1
+session.use_only_cookies = 1
+session.cookie_secure = 1
+
+; === 禁用高危函数 (防 Webshell) ===
+disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_get_status,popen,ini_alter,ini_restore,dl,readlink,symlink,popepassthru,stream_socket_server,fsocket,popen
+
+; === 目录锁定 ===
+open_basedir = /var/www/html:/tmp
+EOF
+
+            # 2. 修改 docker-compose.yml 挂载
+            yml_file="$d/docker-compose.yml"
+            need_restart=0
+            
+            # 情况 A: 以前挂载过 uploads.ini (旧版脚本) -> 替换为 php_security.ini
+            if grep -q "uploads.ini" "$yml_file"; then
+                sed -i 's|./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini|./php_security.ini:/usr/local/etc/php/conf.d/security.ini|g' "$yml_file"
+                echo -e "  - [配置] 已替换旧版 uploads.ini"
+                need_restart=1
+            
+            # 情况 B: 以前挂载过 php_security.ini (已经是新版) -> 只更新了文件内容
+            elif grep -q "php_security.ini" "$yml_file"; then
+                echo -e "  - [配置] 配置文件内容已更新"
+                need_restart=1
+                
+            # 情况 C: 从未挂载过任何 ini -> 插入新挂载
+            else
+                # 备份
+                cp "$yml_file" "$yml_file.bak"
+                # 在 volumes: 下寻找 wp_data 行，在下面插入
+                # 如果找不到 wp_data 锚点，尝试直接在 volumes: 下插入
+                if grep -q "wp_data:/var/www/html" "$yml_file"; then
+                    sed -i '/wp_data:\/var\/www\/html/a \      - ./php_security.ini:/usr/local/etc/php/conf.d/security.ini' "$yml_file"
+                    echo -e "  - [配置] 已添加挂载规则"
+                    need_restart=1
+                else
+                    echo -e "  - ${RED}[错误] 无法定位挂载点，请手动检查 $yml_file${NC}"
+                fi
+            fi
+
+            # 3. 重启容器
+            if [ "$need_restart" -eq 1 ]; then
+                echo -e "  - [重启] 正在应用更改..."
+                cd "$d" && docker compose up -d
+                echo -e "  - ${GREEN}✔ 完成${NC}"
+            fi
+        fi
+    done
+    echo -e "\n${GREEN}✔ 所有站点 PHP 加固完成。${NC}"
+    pause_prompt
+}
+
 function component_manager() { 
     while true; do 
         clear
@@ -1512,6 +1601,7 @@ function component_manager() {
         echo " 2. 切换 数据库 版本 (⚠️ 高危)"
         echo " 3. 切换 Redis 版本"
         echo " 4. 切换 Nginx 版本 (推荐 Alpine)"
+        echo -e " 5. ${GREEN}全站 PHP 安全加固 (disable_functions)${NC} [推荐]"
         echo " 0. 返回上一级"
         echo "--------------------------"
         read -p "请输入选项 [0-4]: " op
@@ -1605,58 +1695,6 @@ function component_manager() {
         echo -e "${GREEN}✔ 更新完成${NC}"
         pause_prompt
     done 
-}
-
-# === [新增] PHP 安全加固 (批量应用) ===
-function harden_php_security() {
-    echo -e "${YELLOW}>>> 正在为所有站点部署 PHP 安全配置...${NC}"
-    echo -e "${RED}注意：这将禁用 exec/shell_exec 等函数。如果你的网站用了某些特殊插件（如备份插件），可能会报错。${NC}"
-    read -p "确认执行? (y/n): " confirm
-    if [ "$confirm" != "y" ]; then return; fi
-
-    for d in "$SITES_DIR"/*; do
-        if [ -d "$d" ]; then
-            domain=$(basename "$d")
-            # 1. 写入配置文件
-            cat > "$d/php_security.ini" <<EOF
-[PHP]
-expose_php = Off
-display_errors = Off
-log_errors = On
-memory_limit = 512M
-upload_max_filesize = 512M
-post_max_size = 512M
-allow_url_include = Off
-session.cookie_httponly = 1
-disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_get_status,popen,ini_alter,ini_restore,dl,readlink,symlink,popepassthru,stream_socket_server,fsocket,popen
-open_basedir = /var/www/html:/tmp
-EOF
-            
-            # 2. 修改 docker-compose.yml 挂载
-            # 如果之前挂载的是 uploads.ini，替换为 php_security.ini
-            if grep -q "uploads.ini" "$d/docker-compose.yml"; then
-                sed -i 's|./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini|./php_security.ini:/usr/local/etc/php/conf.d/security.ini|g' "$d/docker-compose.yml"
-                echo -e " - $domain: ${GREEN}已升级配置${NC}"
-                need_restart=1
-            # 如果没挂载过，则插入挂载 (在 volumes 下)
-            elif ! grep -q "php_security.ini" "$d/docker-compose.yml"; then
-                # 这里用简单的插入逻辑，假设 volumes 就在 wp_data 下面
-                sed -i '/wp_data:\/var\/www\/html/a \      - ./php_security.ini:/usr/local/etc/php/conf.d/security.ini' "$d/docker-compose.yml"
-                echo -e " - $domain: ${GREEN}已添加配置${NC}"
-                need_restart=1
-            else
-                echo -e " - $domain: ${YELLOW}配置已存在${NC}"
-                need_restart=0
-            fi
-
-            # 3. 重启生效
-            if [ "$need_restart" -eq 1 ]; then
-                cd "$d" && docker compose up -d
-            fi
-        fi
-    done
-    echo -e "${GREEN}✔ PHP 加固完成${NC}"
-    pause_prompt
 }
 
 function add_basic_auth() {
