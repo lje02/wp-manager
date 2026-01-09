@@ -1607,6 +1607,58 @@ function component_manager() {
     done 
 }
 
+# === [新增] PHP 安全加固 (批量应用) ===
+function harden_php_security() {
+    echo -e "${YELLOW}>>> 正在为所有站点部署 PHP 安全配置...${NC}"
+    echo -e "${RED}注意：这将禁用 exec/shell_exec 等函数。如果你的网站用了某些特殊插件（如备份插件），可能会报错。${NC}"
+    read -p "确认执行? (y/n): " confirm
+    if [ "$confirm" != "y" ]; then return; fi
+
+    for d in "$SITES_DIR"/*; do
+        if [ -d "$d" ]; then
+            domain=$(basename "$d")
+            # 1. 写入配置文件
+            cat > "$d/php_security.ini" <<EOF
+[PHP]
+expose_php = Off
+display_errors = Off
+log_errors = On
+memory_limit = 512M
+upload_max_filesize = 512M
+post_max_size = 512M
+allow_url_include = Off
+session.cookie_httponly = 1
+disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_get_status,popen,ini_alter,ini_restore,dl,readlink,symlink,popepassthru,stream_socket_server,fsocket,popen
+open_basedir = /var/www/html:/tmp
+EOF
+            
+            # 2. 修改 docker-compose.yml 挂载
+            # 如果之前挂载的是 uploads.ini，替换为 php_security.ini
+            if grep -q "uploads.ini" "$d/docker-compose.yml"; then
+                sed -i 's|./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini|./php_security.ini:/usr/local/etc/php/conf.d/security.ini|g' "$d/docker-compose.yml"
+                echo -e " - $domain: ${GREEN}已升级配置${NC}"
+                need_restart=1
+            # 如果没挂载过，则插入挂载 (在 volumes 下)
+            elif ! grep -q "php_security.ini" "$d/docker-compose.yml"; then
+                # 这里用简单的插入逻辑，假设 volumes 就在 wp_data 下面
+                sed -i '/wp_data:\/var\/www\/html/a \      - ./php_security.ini:/usr/local/etc/php/conf.d/security.ini' "$d/docker-compose.yml"
+                echo -e " - $domain: ${GREEN}已添加配置${NC}"
+                need_restart=1
+            else
+                echo -e " - $domain: ${YELLOW}配置已存在${NC}"
+                need_restart=0
+            fi
+
+            # 3. 重启生效
+            if [ "$need_restart" -eq 1 ]; then
+                cd "$d" && docker compose up -d
+            fi
+        fi
+    done
+    echo -e "${GREEN}✔ PHP 加固完成${NC}"
+    pause_prompt
+}
+
 function add_basic_auth() {
     # 依赖检查
     if ! command -v htpasswd >/dev/null 2>&1; then
@@ -2650,13 +2702,35 @@ server {
 EOF
 
     # 3. 生成 PHP 上传限制配置
-    cat > "$sdir/uploads.ini" <<EOF
-file_uploads = On
-memory_limit = 512M
-upload_max_filesize = 512M
-post_max_size = 512M
-max_execution_time = 600
+    # 注意：某些备份插件或图片处理插件可能需要 proc_open，如果报错请从列表中移除
+    cat > "$sdir/php_security.ini" <<EOF
+[PHP]
+; === 基础安全 ===
 expose_php = Off
+display_errors = Off
+display_startup_errors = Off
+log_errors = On
+error_log = /var/log/php_errors.log
+; === 资源限制 (防DoS) ===
+memory_limit = 512M
+max_execution_time = 300
+max_input_time = 300
+post_max_size = 512M
+upload_max_filesize = 512M
+max_file_uploads = 20
+; === 远程包含防御 (防RFI) ===
+allow_url_fopen = On
+allow_url_include = Off
+; === 会话安全 ===
+session.cookie_httponly = 1
+session.use_only_cookies = 1
+session.cookie_secure = 1
+; === 核心函数禁用 (废掉 Webshell) ===
+; 禁用了命令执行、进程操作等函数。这能防御 90% 的一句话木马。
+disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_get_status,popen,ini_alter,ini_restore,dl,readlink,symlink,popepassthru,stream_socket_server,fsocket,popen
+; === 目录锁定 (防跨站/读系统文件) ===
+; 限制 PHP 只能访问 /var/www/html 和 /tmp 目录
+open_basedir = /var/www/html:/tmp
 EOF
 
     # 4. 生成 Docker Compose (已修复 Logging 和 环境变量)
@@ -2723,7 +2797,9 @@ services:
         }
     volumes:
       - wp_data:/var/www/html
-      - ./uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
+      - ./php_security
+.ini:/usr/local/etc/php/conf.d/security
+.ini
     networks:
       - default
 
