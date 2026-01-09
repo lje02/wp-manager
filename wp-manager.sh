@@ -2077,8 +2077,7 @@ function traffic_manager() {
         echo -e "${YELLOW}>>> 正在测试 Nginx 配置...${NC}"
         # 预检配置
         if docker exec gateway_proxy nginx -t >/dev/null 2>&1; then
-            # 把新域名 $fd 传进去，让网关盯着它
-            reload_gateway_config "$fd"
+            reload_gateway_config
             echo -e "${GREEN}✔ 配置生效${NC}"
         else
             echo -e "${RED}❌ 配置有误，Nginx 拒绝加载！${NC}"
@@ -2902,7 +2901,7 @@ EOF
     # 5. 启动容器
     echo -e "${GREEN}>>> 正在启动容器...${NC}"
     $DOCKER_COMPOSE_CMD -f "$sdir/docker-compose.yml" up -d
-    reload_gateway_config
+    reload_gateway_config "$fd"
     
     check_ssl_status "$fd"
     write_log "Created site $fd (PHP:$pt DB:$di Redis:$rt)"
