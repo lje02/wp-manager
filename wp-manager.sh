@@ -2775,7 +2775,7 @@ disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_get_
 open_basedir = /var/www/html:/tmp
 EOF
 
-       # 4. 生成 Docker Compose
+          # 4. 生成 Docker Compose (完整版：修复了变量转义、YAML格式、Nginx配置)
     cat > "$sdir/docker-compose.yml" <<EOF
 services:
   db:
@@ -2832,7 +2832,6 @@ services:
       WORDPRESS_CONFIG_EXTRA: |
         define('WP_REDIS_HOST', 'redis');
         define('WP_REDIS_PORT', 6379);
-        // 这里必须用 \$\$，Bash写入为 $$，Docker Compose 解析为 $
         define('WP_HOME', 'https://' . \$\$_SERVER['HTTP_HOST']);
         define('WP_SITEURL', 'https://' . \$\$_SERVER['HTTP_HOST']);
         if (isset(\$\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) {
@@ -2840,12 +2839,10 @@ services:
         }
     volumes:
       - wp_data:/var/www/html
-      # 修正了之前的换行错误
       - ./php_security.ini:/usr/local/etc/php/conf.d/security.ini
     networks:
       - default
-EOF
- 
+
   nginx:
     image: nginx:alpine
     container_name: ${pname}_nginx
