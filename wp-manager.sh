@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.3.5(快捷方式: mmp)"
+VERSION="V10.3.6(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -401,34 +401,52 @@ EOF
 chmod +x "$LISTENER_SCRIPT"
 }
 
-# === [修复版] 强制刷新网关配置 (带延迟等待) ===
+# === [智能版] 刷新网关 (验证配置后再重载) ===
 function reload_gateway_config() {
+    local target_domain=$1 # 接收传入的域名参数
     echo -e "${YELLOW}>>> 正在同步网关配置...${NC}"
-    
-    # 1. 【核心修复】强制等待 10 秒
-    # 让新启动的容器有足够的时间完成网络注册和 IP 分配
-    # 否则网关重启太快，会读不到新容器的 IP，导致 502 或 404
-    echo -n "   等待新容器网络就绪 (10秒)..."
-    for i in {1..10}; do 
-        echo -n "."
-        sleep 1
-    done
-    echo ""
 
+    # 如果传入了域名，则进行【智能验证】
+    if [ ! -z "$target_domain" ]; then
+        echo -n "   正在等待网关生成 [ $target_domain ] 的配置..."
+        local max_retries=15  # 最多等 15 秒
+        local found=0
+
+        for ((i=1; i<=max_retries; i++)); do
+            # 深入网关容器内部，检查 default.conf 文件里有没有这个域名
+            if docker exec gateway_proxy grep -q "$target_domain" /etc/nginx/conf.d/default.conf 2>/dev/null; then
+                found=1
+                echo -e " ${GREEN}✔ 检测到配置已生成！${NC}"
+                break
+            fi
+            echo -n "."
+            sleep 1
+        done
+
+        if [ $found -eq 0 ]; then
+            echo -e "\n${RED}⚠️  超时警告: 网关未在 $max_retries 秒内生成新配置。${NC}"
+            echo -e "这可能是 socket-proxy 延迟或容器未完全启动。尝试强制重启..."
+            # 实在不行，强制重启触发全量扫描
+            docker restart gateway_proxy >/dev/null 2>&1
+            return
+        fi
+    else
+        # 如果是删站或其他操作没有传域名，就死等 3 秒
+        sleep 3
+    fi
+
+    # === 执行平滑重载 (Reload) 而不是暴力重启 (Restart) ===
+    # Reload 不会中断现有连接，且速度极快
     if docker ps | grep -q "gateway_proxy"; then
-        # 2. 强制重启网关
-        # Restart 比 reload 更彻底，它会强制 nginx-proxy 重新扫描整个 Docker 网络
-        docker restart gateway_proxy >/dev/null 2>&1
+        docker exec gateway_proxy nginx -s reload >/dev/null 2>&1
+        echo -e "${GREEN}✔ Nginx 已平滑重载，新站点生效。${NC}"
         
-        # 3. 连带重启 ACME
-        # 网关重启后，ACME 容器有时会断开 Socket 连接，顺手重启它最稳妥
+        # 顺便踢一下 ACME
         if docker ps | grep -q "gateway_acme"; then
              docker restart gateway_acme >/dev/null 2>&1
         fi
-        
-        echo -e "${GREEN}✔ 网关已重启，新站点路由已生效${NC}"
     else
-        echo -e "${RED}⚠️  警告: 网关容器未运行，跳过刷新${NC}"
+        echo -e "${RED}⚠️  网关未运行，无法刷新。${NC}"
     fi
 }
 
@@ -2053,7 +2071,8 @@ function traffic_manager() {
         echo -e "${YELLOW}>>> 正在测试 Nginx 配置...${NC}"
         # 预检配置
         if docker exec gateway_proxy nginx -t >/dev/null 2>&1; then
-            reload_gateway_config # 调用之前修复过的带等待的重启函数
+            # 把新域名 $fd 传进去，让网关盯着它
+            reload_gateway_config "$fd"
             echo -e "${GREEN}✔ 配置生效${NC}"
         else
             echo -e "${RED}❌ 配置有误，Nginx 拒绝加载！${NC}"
