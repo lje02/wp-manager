@@ -405,11 +405,11 @@ chmod +x "$LISTENER_SCRIPT"
 function reload_gateway_config() {
     echo -e "${YELLOW}>>> 正在同步网关配置...${NC}"
     
-    # 1. 【核心修复】强制等待 5 秒
+    # 1. 【核心修复】强制等待 10 秒
     # 让新启动的容器有足够的时间完成网络注册和 IP 分配
     # 否则网关重启太快，会读不到新容器的 IP，导致 502 或 404
-    echo -n "   等待新容器网络就绪 (5秒)..."
-    for i in {1..5}; do 
+    echo -n "   等待新容器网络就绪 (10秒)..."
+    for i in {1..10}; do 
         echo -n "."
         sleep 1
     done
