@@ -2,7 +2,7 @@
 
 # ================= 1. 配置区域 =================
 # 脚本版本号
-VERSION="V10.3.6(快捷方式: mmp)"
+VERSION="V10.41(快捷方式: mmp)"
 DOCKER_COMPOSE_CMD="docker compose"
 
 # 数据存储路径
@@ -3014,7 +3014,46 @@ EOF
     check_ssl_status "$s"
 }
 
-function delete_site() { while true; do clear; echo "=== 🗑️ 删除网站 ==="; ls -1 "$SITES_DIR"; echo "----------------"; read -p "域名(0返回): " d; [ "$d" == "0" ] && return; if [ -d "$SITES_DIR/$d" ]; then read -p "确认? (y/n): " c; [ "$c" == "y" ] && cd "$SITES_DIR/$d" && docker compose down -v >/dev/null 2>&1 && cd .. && rm -rf "$SITES_DIR/$d" && echo "Deleted"; write_log "Deleted site $d"; fi; pause_prompt; done; }
+function delete_site() { 
+    while true; do 
+        clear
+        echo -e "${RED}=== 🗑️ 删除网站 (Delete Site) ===${NC}"
+        ls -1 "$SITES_DIR"
+        echo "----------------"
+        read -p "请输入要删除的域名 (0返回): " d
+        [ "$d" == "0" ] && return
+        
+        if [ -d "$SITES_DIR/$d" ]; then 
+            echo -e "${RED}⚠️  警告: 此操作将永久删除 [$d] 的所有文件和数据库！${NC}"
+            read -p "确认彻底删除? (输入 yes 确认): " confirm
+            
+            if [ "$confirm" == "yes" ]; then
+                echo -e "${YELLOW}>>> [1/4] 正在停止容器...${NC}"
+                cd "$SITES_DIR/$d" && docker compose down -v >/dev/null 2>&1
+                
+                echo -e "${YELLOW}>>> [2/4] 正在删除文件...${NC}"
+                cd .. && rm -rf "$SITES_DIR/$d"
+                
+                echo -e "${YELLOW}>>> [3/4] 正在清理 SSL 证书残留...${NC}"
+                # 顺手把证书删了，防止重建时冲突
+                docker exec gateway_acme rm -f "/etc/nginx/certs/$d.crt" "/etc/nginx/certs/$d.key" >/dev/null 2>&1
+                docker exec gateway_acme rm -rf "/etc/acme.sh/$d" >/dev/null 2>&1
+                
+                echo -e "${YELLOW}>>> [4/4] 正在更新网关路由...${NC}"
+                # 【关键】这里调用刷新函数，不需要传参数，只是为了重载配置去掉死链
+                reload_gateway_config
+                
+                write_log "Deleted site $d"
+                echo -e "${GREEN}✔ 站点已彻底删除。${NC}"
+            else
+                echo "操作已取消。"
+            fi
+        else
+            echo -e "${RED}❌ 目录不存在。${NC}"
+        fi
+        pause_prompt
+    done 
+}
 
 function list_sites() {
     clear
