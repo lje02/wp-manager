@@ -869,6 +869,31 @@ function whitelist_cloudflare_firewall() {
     done
 }
 
+# === [新增] 强制重启核心网关服务 ===
+function force_restart_gateway() {
+    echo -e "${YELLOW}>>> 正在执行核心网关强制重启...${NC}"
+    
+    # 1. 重启 Nginx 代理
+    if docker ps -a | grep -q "gateway_proxy"; then
+        echo -e "   Stopping gateway_proxy..."
+        docker restart gateway_proxy
+        echo -e "${GREEN}✔ 网关容器已重启${NC}"
+    else
+        echo -e "${RED}❌ 未找到 gateway_proxy 容器${NC}"
+    fi
+
+    # 2. 重启 ACME 伴侣 (防止 SSL 申请进程卡死)
+    if docker ps -a | grep -q "gateway_acme"; then
+        echo -e "   Restarting gateway_acme..."
+        docker restart gateway_acme
+        echo -e "${GREEN}✔ 证书服务已重启${NC}"
+    fi
+
+    echo -e "------------------------------------"
+    echo -e "${GREEN}所有网关组件已刷新，路由表已重建。${NC}"
+    pause_prompt
+}
+
 function security_center() {
     while true; do
         clear; echo -e "${YELLOW}=== 🛡️ 安全防御中心 (Iron Wall V11.1) ===${NC}"
@@ -2780,7 +2805,7 @@ max_execution_time = 300
 max_input_time = 300
 post_max_size = 512M
 upload_max_filesize = 512M
-max_file_uploads = 20
+max_file_uploads = 90
 
 ; === 远程包含防御 (防RFI) ===
 allow_url_fopen = On
@@ -3146,7 +3171,7 @@ function cert_management() {
         echo "---------------------------------------------------------"
         echo -e " 1. ${GREEN}证书状态看板${NC} (显示过期时间/剩余天数)"
         echo " 2. 查看申请日志 (排查申请卡住/失败原因)"
-        echo " 3. ${GREEN}强制重签所有证书 (推荐，最稳妥)${NC}"
+        echo " 3. 强制重签所有证书"
         echo " 4. 部署自定义证书 (上传 .crt 和 .key)"
         echo " 5. 删除/重置指定证书 (慎用)"
         echo " 6. 备份所有证书到本地"
@@ -3995,7 +4020,7 @@ function show_menu() {
     
     # --- 3. 数据与工具 ---
     echo -e "${YELLOW}[💾 数据与工具]${NC}"
-    echo -e " 20. WP-CLI                      21. 备份/还原 (云端)"
+    echo -e " 20. WP-CLI                     21. 备份/还原 (云端)"
     echo -e " 22. 数据库管理 (Adminer)      23. 数据库 导入/导出 (CLI)"
 	echo -e " 24. 宿主机应用穿透"
     
@@ -4008,6 +4033,7 @@ function show_menu() {
     # === 新增下面这一行 ===
     echo -e " 34. 容器日志 (找密码)         35. SSH 密钥管理"
 	echo -e " 36. 网站二级密码锁"
+    echo -e " 98. 🔄 快速重启网关
     echo -e " 99. 重建核心网关"
 
 
@@ -4092,6 +4118,7 @@ while true; do
         34) view_container_logs;;
         35) ssh_key_manager;;
 		36) add_basic_auth;;
+        98) force_restart_gateway;;
         99) rebuild_gateway_action;;
         u|U) update_script;; 
         x|X) uninstall_cluster;; 
